@@ -13,11 +13,14 @@ def client() -> TestClient:
 
 @pytest.mark.integration
 def test_client_index_served(client: TestClient) -> None:
-    """GET /client/ serves the HTML web client."""
+    """GET /client/ serves the HTML web client with live monitor and audio inspector."""
     response = client.get("/client/")
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
     assert "Call Shield" in response.text
+    assert "audio-file-input" in response.text
+    assert "tab-btn-upload" in response.text
+    assert "dropzone" in response.text
 
 
 @pytest.mark.integration

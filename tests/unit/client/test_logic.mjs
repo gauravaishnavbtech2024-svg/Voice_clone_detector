@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { toViewModel, downsample, backoff, floatTo16BitPCM } from '../../../client/logic.js';
+import { toViewModel, downsample, backoff, floatTo16BitPCM, encodeWAV, summarizeTimeline } from '../../../client/logic.js';
 
 test('toViewModel maps OK level properly', () => {
     const vm = toViewModel({ level: 'OK', score: 1.5, flagged: 0, reason: 'scored' });
@@ -89,4 +89,66 @@ test('floatTo16BitPCM quantizes and bounds samples correctly', () => {
     // Clipped values
     assert.equal(pcm[3], 32767);
     assert.equal(pcm[4], -32768);
+});
+
+test('encodeWAV creates valid RIFF/WAVE header and 16-bit PCM payload', () => {
+    const samples = new Float32Array([0.0, 0.5, -0.5, 1.0]);
+    const sampleRate = 16000;
+    const wavBuffer = encodeWAV(samples, sampleRate);
+
+    assert.equal(wavBuffer.byteLength, 44 + 4 * 2);
+    const view = new DataView(wavBuffer);
+
+    // RIFF magic
+    const riff = String.fromCharCode(view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3));
+    assert.equal(riff, 'RIFF');
+
+    // WAVE magic
+    const wave = String.fromCharCode(view.getUint8(8), view.getUint8(9), view.getUint8(10), view.getUint8(11));
+    assert.equal(wave, 'WAVE');
+
+    // Channels = 1, SampleRate = 16000, BitsPerSample = 16
+    assert.equal(view.getUint16(22, true), 1);
+    assert.equal(view.getUint32(24, true), sampleRate);
+    assert.equal(view.getUint16(34, true), 16);
+
+    // Sample payload starts at byte 44
+    assert.equal(view.getInt16(44, true), 0);
+    assert.equal(view.getInt16(46, true), Math.round(0.5 * 32767));
+    assert.equal(view.getInt16(48, true), Math.round(-0.5 * 32768));
+    assert.equal(view.getInt16(50, true), 32767);
+});
+
+test('summarizeTimeline accurately computes stats, counts, and alert detection', () => {
+    // 1. Empty timeline
+    const emptySummary = summarizeTimeline([]);
+    assert.equal(emptySummary.windowCount, 0);
+    assert.equal(emptySummary.overallLevel, 'OK');
+
+    // 2. All authentic timeline
+    const okTimeline = [
+        { t: 2.0, score: 0.8, level: 'OK' },
+        { t: 3.0, score: 0.9, level: 'OK' },
+        { t: 4.0, score: 0.7, level: 'OK' },
+    ];
+    const okSummary = summarizeTimeline(okTimeline);
+    assert.equal(okSummary.windowCount, 3);
+    assert.equal(okSummary.overallLevel, 'OK');
+    assert.equal(okSummary.alertCount, 0);
+    assert.ok(okSummary.avgScore > 0.7);
+
+    // 3. Mixed timeline with warning and alert
+    const mixedTimeline = [
+        { t: 2.0, score: 0.8, level: 'OK' },
+        { t: 3.0, score: -0.1, level: 'WARNING' },
+        { t: 4.0, score: -0.9, level: 'ALERT' },
+        { t: 5.0, score: -0.8, level: 'ALERT' },
+    ];
+    const mixedSummary = summarizeTimeline(mixedTimeline);
+    assert.equal(mixedSummary.windowCount, 4);
+    assert.equal(mixedSummary.overallLevel, 'ALERT');
+    assert.equal(mixedSummary.alertCount, 2);
+    assert.equal(mixedSummary.warningCount, 1);
+    assert.equal(mixedSummary.peakAlertTimestamp, 4.0);
+    assert.ok(mixedSummary.verdictTitle.includes('SYNTHETIC'));
 });
