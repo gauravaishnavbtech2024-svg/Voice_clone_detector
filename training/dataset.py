@@ -18,59 +18,64 @@ class ASVspoofLADataset(Dataset):
 
     def __init__(
         self,
-        protocol_path: str | Path,
-        audio_dir: str | Path,
+        protocol_path: str | Path | Sequence[tuple[str | Path, str | Path]],
+        audio_dir: str | Path | None = None,
         is_train: bool = True,
         max_samples: int | None = None,
         target_sample_rate: int = 16000,
         window_samples: int = 64000,
     ) -> None:
         super().__init__()
-        self.protocol_path = Path(protocol_path)
-        self.audio_dir = Path(audio_dir)
         self.is_train = is_train
         self.target_sample_rate = target_sample_rate
         self.window_samples = window_samples
 
+        if isinstance(protocol_path, (str, Path)):
+            if audio_dir is None:
+                raise ValueError("audio_dir must be provided when protocol_path is a single path")
+            self.pairs = [(Path(protocol_path), Path(audio_dir))]
+        else:
+            self.pairs = [(Path(p), Path(a)) for p, a in protocol_path]
+
         self.samples: list[tuple[Path, float]] = []
-        self._load_protocol(max_samples)
+        self._load_protocols(max_samples)
 
-    def _load_protocol(self, max_samples: int | None = None) -> None:
-        if not self.protocol_path.is_file():
-            raise FileNotFoundError(f"Protocol file not found at: {self.protocol_path}")
-        if not self.audio_dir.is_dir():
-            raise FileNotFoundError(f"Audio directory not found at: {self.audio_dir}")
-
+    def _load_protocols(self, max_samples: int | None = None) -> None:
         num_bonafide = 0
         num_spoof = 0
 
-        with open(self.protocol_path, "r", encoding="utf-8") as f:
-            for line in f:
-                parts = line.strip().split()
-                if len(parts) < 5:
-                    continue
+        for proto_path, audio_dir in self.pairs:
+            if not proto_path.is_file():
+                raise FileNotFoundError(f"Protocol file not found at: {proto_path}")
+            if not audio_dir.is_dir():
+                raise FileNotFoundError(f"Audio directory not found at: {audio_dir}")
 
-                # Format: SPEAKER_ID AUDIO_ID - SYSTEM_ID KEY
-                # e.g., LA_0079 LA_T_1138215 - - bonafide
-                audio_id = parts[1]
-                key = parts[4].lower()
+            with open(proto_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if len(parts) < 5:
+                        continue
 
-                # Convention: 1.0 = Genuine / bonafide, 0.0 = Synthetic / spoof
-                label = 1.0 if key == "bonafide" else 0.0
+                    audio_id = parts[1]
+                    key = parts[4].lower()
+                    label = 1.0 if key == "bonafide" else 0.0
 
-                if label == 1.0:
-                    num_bonafide += 1
-                else:
-                    num_spoof += 1
+                    if label == 1.0:
+                        num_bonafide += 1
+                    else:
+                        num_spoof += 1
 
-                audio_file = self.audio_dir / f"{audio_id}.flac"
-                self.samples.append((audio_file, label))
+                    audio_file = audio_dir / f"{audio_id}.flac"
+                    self.samples.append((audio_file, label))
 
-                if max_samples is not None and len(self.samples) >= max_samples:
-                    break
+                    if max_samples is not None and len(self.samples) >= max_samples:
+                        break
+
+            if max_samples is not None and len(self.samples) >= max_samples:
+                break
 
         print(
-            f"Loaded {len(self.samples)} items from {self.protocol_path.name} "
+            f"Loaded {len(self.samples)} total items from {len(self.pairs)} partition(s) "
             f"(Bonafide: {num_bonafide}, Spoof: {num_spoof})"
         )
 

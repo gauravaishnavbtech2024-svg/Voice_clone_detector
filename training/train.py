@@ -151,8 +151,16 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=32, help="Batch size per step")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--weight-decay", type=float, default=1e-4, help="Weight decay")
-    parser.add_argument("--data-root", type=str, default="datasets/training_dataset/LA/LA", help="Path to ASVspoof LA directory")
+    parser.add_argument("--data-root", type=str, default="datasets/training_dataset", help="Path to ASVspoof directory")
     parser.add_argument("--output-dir", type=str, default="models", help="Directory to save best.pt")
+    parser.add_argument("--resume", type=str, default=None, help="Checkpoint path to resume training from (e.g. models/best.pt)")
+    parser.add_argument(
+        "--split",
+        type=str,
+        default="train",
+        choices=["train", "eval", "remaining", "all", "all-la-pa"],
+        help="Dataset split to train on: 'train' (25k), 'remaining'/'eval' (71k), 'all' (96k), 'all-la-pa'",
+    )
     parser.add_argument("--max-train-samples", type=int, default=None, help="Limit train samples for fast testing")
     parser.add_argument("--max-dev-samples", type=int, default=None, help="Limit dev samples for fast testing")
     parser.add_argument("--num-workers", type=int, default=0, help="DataLoader workers")
@@ -169,20 +177,45 @@ def main() -> None:
     data_root = Path(args.data_root)
     # Auto-resolve nested ASVspoof LA directory if user points to datasets/training_dataset
     if (data_root / "LA" / "LA").is_dir():
-        data_root = data_root / "LA" / "LA"
+        la_root = data_root / "LA" / "LA"
     elif (data_root / "LA" / "ASVspoof2019_LA_cm_protocols").is_dir():
-        data_root = data_root / "LA"
+        la_root = data_root / "LA"
+    else:
+        la_root = data_root
 
-    train_protocol = data_root / "ASVspoof2019_LA_cm_protocols" / "ASVspoof2019.LA.cm.train.trn.txt"
-    train_audio_dir = data_root / "ASVspoof2019_LA_train" / "flac"
+    train_protocol = la_root / "ASVspoof2019_LA_cm_protocols" / "ASVspoof2019.LA.cm.train.trn.txt"
+    train_audio_dir = la_root / "ASVspoof2019_LA_train" / "flac"
 
-    dev_protocol = data_root / "ASVspoof2019_LA_cm_protocols" / "ASVspoof2019.LA.cm.dev.trl.txt"
-    dev_audio_dir = data_root / "ASVspoof2019_LA_dev" / "flac"
+    eval_protocol = la_root / "ASVspoof2019_LA_cm_protocols" / "ASVspoof2019.LA.cm.eval.trl.txt"
+    eval_audio_dir = la_root / "ASVspoof2019_LA_eval" / "flac"
+
+    dev_protocol = la_root / "ASVspoof2019_LA_cm_protocols" / "ASVspoof2019.LA.cm.dev.trl.txt"
+    dev_audio_dir = la_root / "ASVspoof2019_LA_dev" / "flac"
+
+    # Select training partitions based on --split
+    if args.split in ("remaining", "eval"):
+        print("Training Partition: REMAINING evaluation set (71,237 clips)")
+        train_pairs = [(eval_protocol, eval_audio_dir)]
+    elif args.split == "all":
+        print("Training Partition: ALL LA sets combined (Train 25k + Eval 71k = 96,617 clips)")
+        train_pairs = [(train_protocol, train_audio_dir), (eval_protocol, eval_audio_dir)]
+    elif args.split == "all-la-pa":
+        print("Training Partition: ALL LA and PA sets combined")
+        pa_root = data_root
+        if (pa_root / "PA" / "PA").is_dir():
+            pa_root = pa_root / "PA" / "PA"
+        elif (pa_root / "PA").is_dir():
+            pa_root = pa_root / "PA"
+        pa_proto = pa_root / "ASVspoof2019_PA_cm_protocols" / "ASVspoof2019.PA.cm.train.trn.txt"
+        pa_audio = pa_root / "ASVspoof2019_PA_train" / "flac"
+        train_pairs = [(train_protocol, train_audio_dir), (eval_protocol, eval_audio_dir), (pa_proto, pa_audio)]
+    else:
+        print("Training Partition: Standard Train set (25,380 clips)")
+        train_pairs = [(train_protocol, train_audio_dir)]
 
     print("\n--- Loading Datasets ---")
     train_dataset = ASVspoofLADataset(
-        protocol_path=train_protocol,
-        audio_dir=train_audio_dir,
+        protocol_path=train_pairs,
         is_train=True,
         max_samples=args.max_train_samples,
     )
@@ -213,6 +246,26 @@ def main() -> None:
     print(f"Class imbalance pos_weight (spoof / bonafide): {train_dataset.class_weights:.2f}")
 
     model = VoiceCloneDetectorModel().to(device)
+    start_epoch = 1
+    best_dev_loss = float("inf")
+    best_eer = float("inf")
+
+    # Resume from checkpoint if requested
+    if args.resume and Path(args.resume).is_file():
+        print(f"\n[*] Loading checkpoint to resume training: {args.resume}")
+        checkpoint = torch.load(args.resume, map_location=device)
+        if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+            model.load_state_dict(checkpoint["model_state_dict"])
+            if "dev_loss" in checkpoint:
+                best_dev_loss = checkpoint["dev_loss"]
+            if "dev_eer" in checkpoint:
+                best_eer = checkpoint["dev_eer"]
+            if "epoch" in checkpoint:
+                start_epoch = checkpoint["epoch"] + 1
+        elif isinstance(checkpoint, dict):
+            model.load_state_dict(checkpoint)
+        print(f"[*] Successfully resumed! Previous Best Dev EER: {best_eer:.2f}%, Continuing at Epoch {start_epoch}")
+
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
@@ -222,13 +275,11 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     best_model_path = output_dir / "best.pt"
 
-    best_dev_loss = float("inf")
-    best_eer = float("inf")
-
-    print(f"\n--- Starting Training ({args.epochs} Epochs) ---")
+    end_epoch = start_epoch + args.epochs - 1
+    print(f"\n--- Starting Training ({args.epochs} Epochs: from Epoch {start_epoch} to {end_epoch}) ---")
     start_total = time.time()
 
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(start_epoch, end_epoch + 1):
         epoch_start = time.time()
         print(f"\n>>> Epoch {epoch}/{args.epochs}")
 
@@ -273,7 +324,7 @@ def main() -> None:
                 "threshold": dev_thr,
             }
             torch.save(checkpoint, best_model_path)
-            print(f"★ Saved new best checkpoint to {best_model_path}")
+            print(f"[*] Saved new best checkpoint to {best_model_path}")
 
     total_time = time.time() - start_total
     print(
