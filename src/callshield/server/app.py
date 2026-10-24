@@ -5,6 +5,7 @@ import base64
 import io
 import json
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -17,6 +18,8 @@ from fastapi import (
     WebSocketDisconnect,
     status,
 )
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from scipy.io import wavfile
 
 from callshield.core.audio import mulaw_decode, resample_8k_to_16k
@@ -230,3 +233,18 @@ async def websocket_alerts(
     finally:
         send_task.cancel()
         hub.unsubscribe(user_id, queue)
+
+
+# ============================================================================
+# Static Files & Web Client Mount
+# ============================================================================
+
+CLIENT_DIR = Path(__file__).resolve().parents[3] / "client"
+if CLIENT_DIR.is_dir():
+    app.mount("/client", StaticFiles(directory=str(CLIENT_DIR), html=True), name="client")
+
+
+@app.get("/", include_in_schema=False)
+async def root() -> RedirectResponse:
+    """Redirects root URL directly to the interactive web client."""
+    return RedirectResponse(url="/client/")
