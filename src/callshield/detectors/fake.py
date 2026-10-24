@@ -4,6 +4,7 @@ import time
 from collections.abc import Sequence
 
 import numpy as np
+from scipy.signal import welch
 
 
 class FakeDetector:
@@ -62,10 +63,13 @@ class FakeDetector:
         if self.scripted_scores:
             return float(self.scripted_scores.pop(0))
 
-        # Spectral flatness heuristic: geometric_mean / arithmetic_mean of power spectrum
-        power_spectrum = np.abs(np.fft.rfft(x)) ** 2 + 1e-12
-        geom_mean = float(np.exp(np.mean(np.log(power_spectrum))))
-        arith_mean = float(np.mean(power_spectrum))
+        # Spectral flatness heuristic: geometric_mean / arithmetic_mean of Welch PSD
+        # Evaluated across the telephony/speech band (200-3500 Hz) using windowed averaging
+        # to ensure robust evaluation across native 16kHz, 8kHz upsampled, and padded windows.
+        freqs, psd = welch(x, fs=16000, nperseg=512)
+        speech_band = psd[(freqs >= 200.0) & (freqs <= 3500.0)] + 1e-12
+        geom_mean = float(np.exp(np.mean(np.log(speech_band))))
+        arith_mean = float(np.mean(speech_band))
         flatness = geom_mean / arith_mean if arith_mean > 0 else 0.0
 
         # High flatness (> 0.05) -> Genuine (> 0)

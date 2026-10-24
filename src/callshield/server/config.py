@@ -1,0 +1,22 @@
+"""Server configuration and environment variable settings for Call Shield."""
+
+from pathlib import Path
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class ServerSettings(BaseSettings):
+    """Server environment settings."""
+
+    CALLSHIELD_TOKEN: str = "secret-token"
+    CALLSHIELD_DETECTOR: str = "fake"
+    MAX_UPLOAD_MB: int = 25
+    MAX_CONCURRENT_INFERENCE: int = 4
+    MAX_PENDING_WINDOWS: int = 2
+    MODEL_WEIGHTS_PATH: Path | None = None
+    DETECTOR_DELAY_MS: float = 0.0
+
+    model_config = SettingsConfigDict(env_prefix="", case_sensitive=False)
+
+
+settings = ServerSettings()
