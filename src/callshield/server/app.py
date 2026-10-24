@@ -120,8 +120,18 @@ async def score_audio_file(file: UploadFile) -> ScoreResponse:
     else:
         audio_f32 = audio_arr.astype(np.float32)
 
-    # Resample if needed
-    samples_16k = resample_8k_to_16k(audio_f32) if sample_rate == 8000 else audio_f32
+    # Resample to 16 kHz model rate if needed (handles 8k, 24k, 44.1k, 48k, etc.)
+    if sample_rate == 8000:
+        samples_16k = resample_8k_to_16k(audio_f32)
+    elif sample_rate != 16000:
+        import math
+        from scipy.signal import resample_poly
+        g = math.gcd(int(sample_rate), 16000)
+        up = 16000 // g
+        down = int(sample_rate) // g
+        samples_16k = resample_poly(audio_f32, up=up, down=down).astype(np.float32)
+    else:
+        samples_16k = audio_f32
 
     decider = AlertDecider(thr=0.0, k=4, n=6)
     engine = SessionEngine(detector=detector, decider=decider, sample_rate_in=16000)

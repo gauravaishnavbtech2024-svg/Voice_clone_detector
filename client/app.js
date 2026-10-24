@@ -341,7 +341,7 @@ function drawSparkline() {
     const midY = height / 2;
     ctx.beginPath();
     ctx.setLineDash([4, 4]);
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+    ctx.strokeStyle = 'rgba(4, 106, 56, 0.25)';
     ctx.lineWidth = 1;
     ctx.moveTo(0, midY);
     ctx.lineTo(width, midY);
@@ -349,11 +349,11 @@ function drawSparkline() {
     ctx.setLineDash([]);
 
     // Draw grid labels
-    ctx.font = '10px "JetBrains Mono", monospace';
-    ctx.fillStyle = 'rgba(16, 185, 129, 0.5)';
-    ctx.fillText('+1.0 (Authentic)', 8, 14);
-    ctx.fillStyle = 'rgba(244, 63, 94, 0.5)';
-    ctx.fillText('-1.0 (Synthetic)', 8, height - 6);
+    ctx.font = '600 10px "JetBrains Mono", monospace';
+    ctx.fillStyle = '#046a38';
+    ctx.fillText('+1.0 [AUTHENTIC]', 8, 14);
+    ctx.fillStyle = '#e34222';
+    ctx.fillText('-1.0 [SYNTHETIC]', 8, height - 6);
 
     const len = scoreHistory.length;
     if (len < 2) return;
@@ -374,18 +374,18 @@ function drawSparkline() {
     }
 
     const latest = points[points.length - 1];
-    let strokeColor = '#10b981';
-    let fillColorTop = 'rgba(16, 185, 129, 0.25)';
-    let fillColorBottom = 'rgba(16, 185, 129, 0.0)';
+    let strokeColor = '#046a38';
+    let fillColorTop = 'rgba(4, 106, 56, 0.22)';
+    let fillColorBottom = 'rgba(4, 106, 56, 0.01)';
 
     if (latest.level === 'ALERT') {
-        strokeColor = '#f43f5e';
-        fillColorTop = 'rgba(244, 63, 94, 0.35)';
-        fillColorBottom = 'rgba(244, 63, 94, 0.02)';
+        strokeColor = '#e34222';
+        fillColorTop = 'rgba(227, 66, 34, 0.25)';
+        fillColorBottom = 'rgba(227, 66, 34, 0.01)';
     } else if (latest.level === 'WARNING') {
-        strokeColor = '#f59e0b';
-        fillColorTop = 'rgba(245, 158, 11, 0.30)';
-        fillColorBottom = 'rgba(245, 158, 11, 0.02)';
+        strokeColor = '#c25e00';
+        fillColorTop = 'rgba(194, 94, 0, 0.22)';
+        fillColorBottom = 'rgba(194, 94, 0, 0.01)';
     }
 
     // Draw gradient area fill
@@ -403,12 +403,12 @@ function drawSparkline() {
     ctx.fillStyle = gradient;
     ctx.fill();
 
-    // Draw line path
+    // Draw line path with sharp miter join
     ctx.beginPath();
     ctx.strokeStyle = strokeColor;
     ctx.lineWidth = 2.5;
-    ctx.lineJoin = 'round';
-    ctx.lineCap = 'round';
+    ctx.lineJoin = 'miter';
+    ctx.lineCap = 'square';
 
     for (let i = 0; i < points.length; i++) {
         if (i === 0) {
@@ -419,17 +419,12 @@ function drawSparkline() {
     }
     ctx.stroke();
 
-    // Draw pulsing current dot at the latest point
-    ctx.beginPath();
-    ctx.arc(latest.x, latest.y, 4.5, 0, Math.PI * 2);
+    // Draw square marker (no rounding) at the latest point
     ctx.fillStyle = strokeColor;
-    ctx.fill();
-
-    ctx.beginPath();
-    ctx.arc(latest.x, latest.y, 8, 0, Math.PI * 2);
+    ctx.fillRect(latest.x - 3.5, latest.y - 3.5, 7, 7);
     ctx.strokeStyle = strokeColor;
     ctx.lineWidth = 1.5;
-    ctx.stroke();
+    ctx.strokeRect(latest.x - 6.5, latest.y - 6.5, 13, 13);
 }
 
 window.addEventListener('resize', initCanvasDPI);
