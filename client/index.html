@@ -53,60 +53,208 @@
             </button>
         </div>
 
-        <!-- Main Security Monitor Card -->
-        <main class="glass-card" id="status-card">
-            <div class="monitor-header">
-                <div class="monitor-title">
-                    <h2 id="monitor-heading">Voice Stream Security</h2>
-                    <p id="monitor-subtext">Continuous real-time acoustic analysis</p>
-                </div>
-                <div class="level-chip level-OK" id="level-chip">
-                    <span id="chip-level">AUTHENTIC</span>
-                </div>
-            </div>
+        <!-- Navigation Mode Tabs -->
+        <nav class="nav-tabs" aria-label="Detection Mode Selection">
+            <button class="nav-tab active" id="tab-btn-live" type="button" aria-selected="true">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c3.28-.48 6-3.3 6-6.72h-1.7z"/>
+                </svg>
+                <span>Live Voice Shield</span>
+            </button>
+            <button class="nav-tab" id="tab-btn-upload" type="button" aria-selected="false">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/>
+                </svg>
+                <span>Audio File Inspector</span>
+            </button>
+        </nav>
 
-            <!-- Telemetry Metrics Grid -->
-            <section class="telemetry-grid" aria-label="Acoustic Telemetry Metrics">
-                <div class="telemetry-item">
-                    <span class="telemetry-label">Acoustic Score</span>
-                    <span class="telemetry-value" id="telemetry-score">+0.00</span>
+        <!-- PANEL 1: Live Voice Shield (Real-Time Mic Stream) -->
+        <div id="panel-live" class="tab-panel active">
+            <main class="glass-card" id="status-card">
+                <div class="monitor-header">
+                    <div class="monitor-title">
+                        <h2 id="monitor-heading">Voice Stream Security</h2>
+                        <p id="monitor-subtext">Continuous real-time acoustic analysis</p>
+                    </div>
+                    <div class="level-chip level-OK" id="level-chip">
+                        <span id="chip-level">AUTHENTIC</span>
+                    </div>
                 </div>
-                <div class="telemetry-item">
-                    <span class="telemetry-label">Suspicious Windows</span>
-                    <span class="telemetry-value" id="telemetry-flagged">0 / 6</span>
-                </div>
-                <div class="telemetry-item">
-                    <span class="telemetry-label">Analysis Status</span>
-                    <span class="telemetry-value" id="telemetry-status" style="font-size: 1.2rem;">Idle</span>
-                </div>
-            </section>
 
-            <!-- Sparkline Canvas Visualizer -->
-            <section class="visualizer-section" aria-label="Timeline Visualizer">
-                <div class="visualizer-header">
-                    <span>Acoustic Periodicity & Classifier Timeline</span>
-                    <span id="visualizer-legend">Authentic (+1) &larr; 0 &rarr; Synthetic (-1)</span>
+                <!-- Telemetry Metrics Grid -->
+                <section class="telemetry-grid" aria-label="Acoustic Telemetry Metrics">
+                    <div class="telemetry-item">
+                        <span class="telemetry-label">Acoustic Score</span>
+                        <span class="telemetry-value" id="telemetry-score">+0.00</span>
+                    </div>
+                    <div class="telemetry-item">
+                        <span class="telemetry-label">Suspicious Windows</span>
+                        <span class="telemetry-value" id="telemetry-flagged">0 / 6</span>
+                    </div>
+                    <div class="telemetry-item">
+                        <span class="telemetry-label">Analysis Status</span>
+                        <span class="telemetry-value" id="telemetry-status" style="font-size: 1.2rem;">Idle</span>
+                    </div>
+                </section>
+
+                <!-- Sparkline Canvas Visualizer -->
+                <section class="visualizer-section" aria-label="Timeline Visualizer">
+                    <div class="visualizer-header">
+                        <span>Acoustic Periodicity & Classifier Timeline</span>
+                        <span id="visualizer-legend">Authentic (+1) &larr; 0 &rarr; Synthetic (-1)</span>
+                    </div>
+                    <canvas id="sparkline-canvas" width="800" height="120" aria-label="Rolling acoustic score sparkline chart"></canvas>
+                </section>
+
+                <!-- Controls Bar -->
+                <div class="controls-bar">
+                    <button class="btn btn-primary" id="btn-mic-toggle" type="button">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                            <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c3.28-.48 6-3.3 6-6.72h-1.7z"/>
+                        </svg>
+                        <span id="btn-mic-label">Start Voice Monitor</span>
+                    </button>
+
+                    <button class="btn btn-secondary" id="btn-test-tone" type="button">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                            <path d="M12 3v9.28c-.47-.17-.97-.28-1.5-.28C8.01 12 6 14.01 6 16.5S8.01 21 10.5 21c2.31 0 4.2-1.75 4.45-4H15V6h4V3h-7z"/>
+                        </svg>
+                        <span id="btn-tone-label">Inject Synthetic Tone (440Hz)</span>
+                    </button>
                 </div>
-                <canvas id="sparkline-canvas" width="800" height="120" aria-label="Rolling acoustic score sparkline chart"></canvas>
-            </section>
+            </main>
+        </div>
 
-            <!-- Controls Bar -->
-            <div class="controls-bar">
-                <button class="btn btn-primary" id="btn-mic-toggle" type="button">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                        <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c3.28-.48 6-3.3 6-6.72h-1.7z"/>
-                    </svg>
-                    <span id="btn-mic-label">Start Voice Monitor</span>
-                </button>
+        <!-- PANEL 2: Audio File Inspector (Upload & Forensics) -->
+        <div id="panel-upload" class="tab-panel" style="display: none;">
+            <main class="glass-card" id="upload-card">
+                <div class="monitor-header">
+                    <div class="monitor-title">
+                        <h2>Audio Forensic Inspector</h2>
+                        <p>Analyze uploaded phone calls, voicemails, or audio recordings for synthetic speech</p>
+                    </div>
+                    <div class="level-chip level-OK" id="upload-level-chip" style="display: none;">
+                        <span id="upload-chip-level">AUTHENTIC</span>
+                    </div>
+                </div>
 
-                <button class="btn btn-secondary" id="btn-test-tone" type="button">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                        <path d="M12 3v9.28c-.47-.17-.97-.28-1.5-.28C8.01 12 6 14.01 6 16.5S8.01 21 10.5 21c2.31 0 4.2-1.75 4.45-4H15V6h4V3h-7z"/>
-                    </svg>
-                    <span id="btn-tone-label">Inject Synthetic Tone (440Hz)</span>
-                </button>
-            </div>
-        </main>
+                <!-- Drag & Drop Zone -->
+                <div class="upload-dropzone" id="dropzone" tabindex="0" role="button" aria-label="Drag and drop audio file here or press enter to browse">
+                    <input type="file" id="audio-file-input" accept="audio/*,.wav,.mp3,.m4a,.ogg,.flac" style="display: none;">
+                    <div class="dropzone-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24">
+                            <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/>
+                        </svg>
+                    </div>
+                    <div class="dropzone-text">
+                        <h3>Drop audio recording here, or <span class="highlight-link">browse files</span></h3>
+                        <p>Supports WAV, MP3, M4A, OGG, FLAC (Max 25 MB &bull; In-Memory Only)</p>
+                    </div>
+
+                    <!-- Instant Test Presets -->
+                    <div class="preset-chips-container" (click)="$event.stopPropagation()">
+                        <span class="preset-label">Quick Demo Clips:</span>
+                        <div class="preset-chips">
+                            <button class="btn-preset" id="btn-preset-authentic" type="button" title="Test authentic natural speech sample">
+                                🟢 Authentic Voice
+                            </button>
+                            <button class="btn-preset" id="btn-preset-mixed" type="button" title="Test call transitioning from authentic to clone">
+                                ⚠️ Mixed Phone Call
+                            </button>
+                            <button class="btn-preset" id="btn-preset-clone" type="button" title="Test synthesized voice clone">
+                                🚨 AI Voice Clone
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Processing Spinner & Progress -->
+                <div class="upload-processing" id="upload-processing" style="display: none;">
+                    <div class="spinner"></div>
+                    <div class="processing-text">
+                        <h4 id="processing-step">Analyzing acoustic spectral dynamics...</h4>
+                        <p>Segmenting audio into 4-second sliding windows with 1-second hops</p>
+                    </div>
+                </div>
+
+                <!-- Results & Analysis Dashboard (Populated dynamically) -->
+                <div class="analysis-results" id="analysis-results" style="display: none;">
+                    <!-- File Metadata Bar & Audio Player -->
+                    <div class="audio-player-card">
+                        <div class="file-meta">
+                            <div class="file-name" id="file-name-display">sample.wav</div>
+                            <div class="file-specs" id="file-specs-display">0:00 &bull; 16 kHz &bull; Mono</div>
+                        </div>
+                        <audio id="audio-player" controls preload="metadata"></audio>
+                    </div>
+
+                    <!-- Overall Verdict Card -->
+                    <div class="verdict-banner" id="verdict-banner">
+                        <div class="verdict-badge" id="verdict-badge">AUTHENTIC</div>
+                        <div class="verdict-info">
+                            <h3 id="verdict-title">VERDICT: AUTHENTIC NATURAL SPEECH</h3>
+                            <p id="verdict-desc">Acoustic dynamics and harmonic structures match authentic natural human voice.</p>
+                        </div>
+                    </div>
+
+                    <!-- Metrics Grid -->
+                    <div class="telemetry-grid">
+                        <div class="telemetry-item">
+                            <span class="telemetry-label">Mean Classifier Score</span>
+                            <span class="telemetry-value" id="upload-avg-score">+0.85</span>
+                        </div>
+                        <div class="telemetry-item">
+                            <span class="telemetry-label">Lowest Window Score</span>
+                            <span class="telemetry-value" id="upload-min-score">+0.72</span>
+                        </div>
+                        <div class="telemetry-item">
+                            <span class="telemetry-label">Alert Segments</span>
+                            <span class="telemetry-value" id="upload-alert-count">0 Windows</span>
+                        </div>
+                        <div class="telemetry-item">
+                            <span class="telemetry-label">First Anomaly Detected</span>
+                            <span class="telemetry-value" id="upload-peak-time">None</span>
+                        </div>
+                    </div>
+
+                    <!-- Interactive Timeline Bar Chart Section -->
+                    <section class="visualizer-section">
+                        <div class="visualizer-header">
+                            <span>Window-by-Window Threat Progression (Click bar to seek audio)</span>
+                            <span class="timeline-legend">
+                                <span class="legend-dot dot-ok"></span> Authentic
+                                <span class="legend-dot dot-warn"></span> Warning
+                                <span class="legend-dot dot-alert"></span> Alert
+                            </span>
+                        </div>
+                        <div class="timeline-bar-track" id="timeline-bar-track" role="region" aria-label="Audio timeline risk graph">
+                            <!-- Injected dynamically -->
+                        </div>
+                    </section>
+
+                    <!-- Expandable Window Diagnostics Table -->
+                    <details class="diagnostics-details">
+                        <summary>View Window-by-Window Diagnostic Table (<span id="table-window-count">0</span> windows)</summary>
+                        <div class="table-container">
+                            <table class="diagnostics-table">
+                                <thead>
+                                    <tr>
+                                        <th>Window (s)</th>
+                                        <th>Threat Level</th>
+                                        <th>Acoustic Score</th>
+                                        <th>Status Flag</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="diagnostics-table-body">
+                                    <!-- Injected dynamically -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </details>
+                </div>
+            </main>
+        </div>
 
         <!-- Privacy & Compliance Footer -->
         <footer>

@@ -9,7 +9,7 @@
  * - Progressive alerts and accessible UI updates
  */
 
-import { toViewModel, backoff } from './logic.js';
+import { toViewModel, backoff, downsample, encodeWAV, summarizeTimeline } from './logic.js';
 
 // Application State
 let ws = null;
@@ -435,6 +435,377 @@ function drawSparkline() {
 window.addEventListener('resize', initCanvasDPI);
 
 // ============================================================================
+// Mode Tab Switching (Live vs Audio Upload Inspector)
+// ============================================================================
+
+const tabBtnLive = document.getElementById('tab-btn-live');
+const tabBtnUpload = document.getElementById('tab-btn-upload');
+const panelLive = document.getElementById('panel-live');
+const panelUpload = document.getElementById('panel-upload');
+
+function switchTab(mode) {
+    if (mode === 'live') {
+        tabBtnLive.classList.add('active');
+        tabBtnLive.setAttribute('aria-selected', 'true');
+        tabBtnUpload.classList.remove('active');
+        tabBtnUpload.setAttribute('aria-selected', 'false');
+        panelLive.style.display = 'block';
+        panelUpload.style.display = 'none';
+        initCanvasDPI();
+    } else {
+        tabBtnUpload.classList.add('active');
+        tabBtnUpload.setAttribute('aria-selected', 'true');
+        tabBtnLive.classList.remove('active');
+        tabBtnLive.setAttribute('aria-selected', 'false');
+        panelUpload.style.display = 'block';
+        panelLive.style.display = 'none';
+    }
+}
+
+if (tabBtnLive && tabBtnUpload) {
+    tabBtnLive.addEventListener('click', () => switchTab('live'));
+    tabBtnUpload.addEventListener('click', () => switchTab('upload'));
+}
+
+// ============================================================================
+// Audio File Inspector & Upload Forensics
+// ============================================================================
+
+const dropzone = document.getElementById('dropzone');
+const audioFileInput = document.getElementById('audio-file-input');
+const uploadProcessing = document.getElementById('upload-processing');
+const processingStep = document.getElementById('processing-step');
+const analysisResults = document.getElementById('analysis-results');
+
+const fileNameDisplay = document.getElementById('file-name-display');
+const fileSpecsDisplay = document.getElementById('file-specs-display');
+const audioPlayer = document.getElementById('audio-player');
+
+const verdictBanner = document.getElementById('verdict-banner');
+const verdictBadge = document.getElementById('verdict-badge');
+const verdictTitle = document.getElementById('verdict-title');
+const verdictDesc = document.getElementById('verdict-desc');
+
+const uploadAvgScore = document.getElementById('upload-avg-score');
+const uploadMinScore = document.getElementById('upload-min-score');
+const uploadAlertCount = document.getElementById('upload-alert-count');
+const uploadPeakTime = document.getElementById('upload-peak-time');
+const timelineBarTrack = document.getElementById('timeline-bar-track');
+const tableWindowCount = document.getElementById('table-window-count');
+const diagnosticsTableBody = document.getElementById('diagnostics-table-body');
+
+const btnPresetAuthentic = document.getElementById('btn-preset-authentic');
+const btnPresetMixed = document.getElementById('btn-preset-mixed');
+const btnPresetClone = document.getElementById('btn-preset-clone');
+
+let activeAudioTimeline = [];
+
+// Drag & drop handlers
+if (dropzone && audioFileInput) {
+    dropzone.addEventListener('click', () => {
+        audioFileInput.click();
+    });
+
+    dropzone.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            audioFileInput.click();
+        }
+    });
+
+    ['dragenter', 'dragover'].forEach((eventName) => {
+        dropzone.addEventListener(eventName, (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dropzone.classList.add('dragover');
+        });
+    });
+
+    ['dragleave', 'drop'].forEach((eventName) => {
+        dropzone.addEventListener(eventName, (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dropzone.classList.remove('dragover');
+        });
+    });
+
+    dropzone.addEventListener('drop', (e) => {
+        const files = e.dataTransfer.files;
+        if (files && files.length > 0) {
+            processSelectedFile(files[0]);
+        }
+    });
+
+    audioFileInput.addEventListener('change', (e) => {
+        if (e.target.files && e.target.files.length > 0) {
+            processSelectedFile(e.target.files[0]);
+        }
+    });
+}
+
+// Preset test clip buttons
+if (btnPresetAuthentic) {
+    btnPresetAuthentic.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const file = generateDemoAudio('authentic');
+        processSelectedFile(file);
+    });
+}
+
+if (btnPresetMixed) {
+    btnPresetMixed.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const file = generateDemoAudio('mixed');
+        processSelectedFile(file);
+    });
+}
+
+if (btnPresetClone) {
+    btnPresetClone.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const file = generateDemoAudio('clone');
+        processSelectedFile(file);
+    });
+}
+
+/**
+ * Synthesizes test WAV clips in memory for instant 1-click verification.
+ */
+function generateDemoAudio(type) {
+    const sampleRate = 16000;
+    const duration = type === 'mixed' ? 10.0 : 6.0;
+    const numSamples = Math.floor(sampleRate * duration);
+    const samples = new Float32Array(numSamples);
+
+    if (type === 'authentic') {
+        // High spectral flatness / speech-like formant harmonics
+        for (let i = 0; i < numSamples; i++) {
+            const t = i / sampleRate;
+            const env = 0.5 + 0.5 * Math.sin(2 * Math.PI * 1.5 * t);
+            const noise = (Math.random() * 2 - 1) * 0.45;
+            const formant1 = Math.sin(2 * Math.PI * 220 * t) * 0.2;
+            const formant2 = Math.sin(2 * Math.PI * 880 * t) * 0.15;
+            samples[i] = (noise + formant1 + formant2) * env * 0.6;
+        }
+    } else if (type === 'clone') {
+        // Pure single-frequency 440 Hz sinusoidal tone
+        for (let i = 0; i < numSamples; i++) {
+            const t = i / sampleRate;
+            samples[i] = Math.sin(2 * Math.PI * 440 * t) * 0.5;
+        }
+    } else if (type === 'mixed') {
+        // 4s authentic speech followed by 6s synthetic clone tone
+        const switchIdx = sampleRate * 4;
+        for (let i = 0; i < numSamples; i++) {
+            const t = i / sampleRate;
+            if (i < switchIdx) {
+                const env = 0.5 + 0.5 * Math.sin(2 * Math.PI * 2.0 * t);
+                const noise = (Math.random() * 2 - 1) * 0.45;
+                const formant = Math.sin(2 * Math.PI * 300 * t) * 0.2;
+                samples[i] = (noise + formant) * env * 0.6;
+            } else {
+                samples[i] = Math.sin(2 * Math.PI * 440 * t) * 0.5;
+            }
+        }
+    }
+
+    const wavBuffer = encodeWAV(samples, sampleRate);
+    const blob = new Blob([wavBuffer], { type: 'audio/wav' });
+    const filename = `demo_${type}_sample.wav`;
+    return new File([blob], filename, { type: 'audio/wav' });
+}
+
+/**
+ * Handles audio file ingestion, format conversion (if not WAV), and API scoring.
+ */
+async function processSelectedFile(file) {
+    if (!file) return;
+
+    // Show processing indicator
+    uploadProcessing.style.display = 'flex';
+    analysisResults.style.display = 'none';
+    processingStep.textContent = 'Preparing audio stream for analysis...';
+
+    try {
+        let uploadBlob = file;
+        let finalDuration = 0;
+        let finalSampleRate = 16000;
+
+        const isWav = file.name.toLowerCase().endsWith('.wav') || file.type.includes('wav');
+
+        if (!isWav) {
+            processingStep.textContent = 'Transcoding audio to 16 kHz PCM stream in browser memory...';
+            const arrayBuffer = await file.arrayBuffer();
+            const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+            const tempCtx = new AudioContextClass();
+            const decoded = await tempCtx.decodeAudioData(arrayBuffer);
+
+            finalDuration = decoded.duration;
+            finalSampleRate = 16000;
+
+            const rawChannel = decoded.getChannelData(0);
+            const downsampled = downsample(rawChannel, decoded.sampleRate, 16000);
+            const wavBuffer = encodeWAV(downsampled, 16000);
+            uploadBlob = new Blob([wavBuffer], { type: 'audio/wav' });
+            await tempCtx.close();
+        }
+
+        // Setup audio player preview
+        const audioUrl = URL.createObjectURL(uploadBlob);
+        audioPlayer.src = audioUrl;
+
+        // Query server /api/score
+        processingStep.textContent = 'Running rolling multi-window acoustic classifier on server...';
+        const formData = new FormData();
+        formData.append('file', uploadBlob, file.name.endsWith('.wav') ? file.name : `${file.name}.wav`);
+
+        const response = await fetch('/api/score', {
+            method: 'POST',
+            body: formData,
+        });
+
+        if (!response.ok) {
+            const errData = await response.json().catch(() => ({}));
+            throw new Error(errData.detail || `Server returned ${response.status}`);
+        }
+
+        const data = await response.json();
+        const timeline = data.timeline || [];
+
+        renderAnalysisResults(file, timeline, finalDuration, finalSampleRate);
+    } catch (err) {
+        console.error('[CallShield] Audio analysis failed:', err);
+        alert(`Analysis failed: ${err.message}`);
+    } finally {
+        uploadProcessing.style.display = 'none';
+    }
+}
+
+/**
+ * Renders verdict, statistics, timeline bar chart, and window details.
+ */
+function renderAnalysisResults(file, timeline, estimatedDuration, sampleRate) {
+    analysisResults.style.display = 'flex';
+    activeAudioTimeline = timeline;
+
+    const summary = summarizeTimeline(timeline);
+
+    // Metadata
+    fileNameDisplay.textContent = file.name;
+    const durSec = estimatedDuration || (timeline.length > 0 ? timeline[timeline.length - 1].t : 0);
+    const minStr = Math.floor(durSec / 60);
+    const secStr = Math.floor(durSec % 60).toString().padStart(2, '0');
+    fileSpecsDisplay.textContent = `${minStr}:${secStr} • ${(file.size / 1024).toFixed(1)} KB • ${sampleRate || 16000} Hz`;
+
+    // Verdict
+    verdictBanner.className = `verdict-banner ${summary.overallLevel}`;
+    verdictBadge.textContent = summary.overallLevel === 'OK' ? 'AUTHENTIC' : summary.overallLevel;
+    verdictTitle.textContent = summary.verdictTitle;
+    verdictDesc.textContent = summary.verdictDescription;
+
+    // Metrics
+    const avgSign = summary.avgScore > 0 ? '+' : '';
+    uploadAvgScore.textContent = `${avgSign}${summary.avgScore.toFixed(2)}`;
+    uploadAvgScore.style.color = summary.avgScore > 0 ? 'var(--color-ok)' : 'var(--color-alert)';
+
+    const minSign = summary.minScore > 0 ? '+' : '';
+    uploadMinScore.textContent = `${minSign}${summary.minScore.toFixed(2)}`;
+    uploadMinScore.style.color = summary.minScore > 0 ? 'var(--color-ok)' : 'var(--color-alert)';
+
+    uploadAlertCount.textContent = `${summary.alertCount} Windows`;
+    uploadPeakTime.textContent = summary.peakAlertTimestamp !== null
+        ? `${summary.peakAlertTimestamp.toFixed(1)}s`
+        : 'None';
+
+    // Interactive Timeline Bars
+    timelineBarTrack.innerHTML = '';
+    timeline.forEach((pt, index) => {
+        const col = document.createElement('div');
+        col.className = 'timeline-bar-col';
+        col.dataset.t = pt.t;
+        col.title = `Window at ${pt.t.toFixed(1)}s: Score ${pt.score > 0 ? '+' : ''}${pt.score.toFixed(2)} (${pt.level})`;
+
+        // Height maps score [-1, 1] to height [14px, 68px]
+        const clampedScore = Math.max(-1.0, Math.min(1.0, pt.score));
+        const normalizedHeight = Math.round(14 + ((clampedScore + 1.0) / 2.0) * 54);
+
+        const pill = document.createElement('div');
+        pill.className = `timeline-bar-pill ${pt.level}`;
+        pill.style.height = `${normalizedHeight}px`;
+
+        const timeLabel = document.createElement('span');
+        timeLabel.className = 'timeline-bar-time';
+        timeLabel.textContent = `${Math.round(pt.t)}s`;
+
+        col.appendChild(pill);
+        col.appendChild(timeLabel);
+
+        // Click on bar seeks audio player directly to window start
+        col.addEventListener('click', () => {
+            if (audioPlayer) {
+                audioPlayer.currentTime = Math.max(0, pt.t - 2.0);
+                audioPlayer.play().catch(() => {});
+            }
+        });
+
+        timelineBarTrack.appendChild(col);
+    });
+
+    // Window Diagnostics Table
+    tableWindowCount.textContent = timeline.length;
+    diagnosticsTableBody.innerHTML = '';
+    timeline.forEach((pt) => {
+        const row = document.createElement('tr');
+
+        const cellTime = document.createElement('td');
+        cellTime.textContent = `${pt.t.toFixed(1)}s`;
+
+        const cellLevel = document.createElement('td');
+        cellLevel.style.color = pt.level === 'ALERT'
+            ? 'var(--color-alert)'
+            : pt.level === 'WARNING'
+            ? 'var(--color-warn)'
+            : 'var(--color-ok)';
+        cellLevel.style.fontWeight = '600';
+        cellLevel.textContent = pt.level;
+
+        const cellScore = document.createElement('td');
+        const sSign = pt.score > 0 ? '+' : '';
+        cellScore.textContent = `${sSign}${pt.score.toFixed(3)}`;
+
+        const cellFlag = document.createElement('td');
+        cellFlag.textContent = pt.level === 'ALERT'
+            ? '🚨 AI Spoof'
+            : pt.level === 'WARNING'
+            ? '⚠️ Irregular'
+            : '🟢 Natural';
+
+        row.appendChild(cellTime);
+        row.appendChild(cellLevel);
+        row.appendChild(cellScore);
+        row.appendChild(cellFlag);
+        diagnosticsTableBody.appendChild(row);
+    });
+}
+
+// Sync audio playback time to highlight the current timeline bar
+if (audioPlayer) {
+    audioPlayer.addEventListener('timeupdate', () => {
+        const curr = audioPlayer.currentTime;
+        const cols = timelineBarTrack.querySelectorAll('.timeline-bar-col');
+        cols.forEach((col) => {
+            const t = parseFloat(col.dataset.t);
+            // Highlight window if current time is within [t-2, t]
+            if (curr >= t - 2.0 && curr <= t) {
+                col.classList.add('playing');
+            } else {
+                col.classList.remove('playing');
+            }
+        });
+    });
+}
+
+// ============================================================================
 // Initialization
 // ============================================================================
 
@@ -443,3 +814,4 @@ window.addEventListener('DOMContentLoaded', () => {
     drawSparkline();
     connectWebSocket();
 });
+

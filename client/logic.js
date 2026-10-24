@@ -107,3 +107,114 @@ export function floatTo16BitPCM(samples) {
 
     return buffer;
 }
+
+export function encodeWAV(samples, sampleRate = 16000) {
+    const buffer = new ArrayBuffer(44 + samples.length * 2);
+    const view = new DataView(buffer);
+
+    function writeString(offset, string) {
+        for (let i = 0; i < string.length; i++) {
+            view.setUint8(offset + i, string.charCodeAt(i));
+        }
+    }
+
+    // RIFF chunk descriptor
+    writeString(0, 'RIFF');
+    view.setUint32(4, 36 + samples.length * 2, true);
+    writeString(8, 'WAVE');
+
+    // fmt sub-chunk
+    writeString(12, 'fmt ');
+    view.setUint32(16, 16, true); // Subchunk1Size (16 for PCM)
+    view.setUint16(20, 1, true); // AudioFormat (1 for PCM)
+    view.setUint16(22, 1, true); // NumChannels (1 mono)
+    view.setUint32(24, sampleRate, true); // SampleRate
+    view.setUint32(28, sampleRate * 2, true); // ByteRate
+    view.setUint16(32, 2, true); // BlockAlign
+    view.setUint16(34, 16, true); // BitsPerSample
+
+    // data sub-chunk
+    writeString(36, 'data');
+    view.setUint32(40, samples.length * 2, true);
+
+    // Write PCM 16-bit samples
+    for (let i = 0; i < samples.length; i++) {
+        const s = Math.max(-1.0, Math.min(1.0, samples[i]));
+        const intSample = s < 0 ? Math.round(s * 32768) : Math.round(s * 32767);
+        view.setInt16(44 + i * 2, intSample, true);
+    }
+
+    return buffer;
+}
+
+export function summarizeTimeline(timeline) {
+    if (!timeline || !Array.isArray(timeline) || timeline.length === 0) {
+        return {
+            windowCount: 0,
+            avgScore: 0.0,
+            minScore: 0.0,
+            overallLevel: 'OK',
+            peakAlertTimestamp: null,
+            alertCount: 0,
+            warningCount: 0,
+            okCount: 0,
+            verdictTitle: 'NO DATA',
+            verdictDescription: 'No timeline windows were processed.',
+        };
+    }
+
+    let sum = 0;
+    let minScore = Infinity;
+    let alertCount = 0;
+    let warningCount = 0;
+    let okCount = 0;
+    let peakAlertTimestamp = null;
+
+    for (const pt of timeline) {
+        const score = typeof pt.score === 'number' ? pt.score : 0.0;
+        sum += score;
+        if (score < minScore) {
+            minScore = score;
+        }
+
+        if (pt.level === 'ALERT') {
+            alertCount++;
+            if (peakAlertTimestamp === null) {
+                peakAlertTimestamp = pt.t;
+            }
+        } else if (pt.level === 'WARNING') {
+            warningCount++;
+        } else {
+            okCount++;
+        }
+    }
+
+    const avgScore = sum / timeline.length;
+    let overallLevel = 'OK';
+    let verdictTitle = 'VERDICT: AUTHENTIC NATURAL SPEECH';
+    let verdictDescription = 'Acoustic dynamics and harmonic structures match authentic natural human voice.';
+
+    if (alertCount > 0) {
+        overallLevel = 'ALERT';
+        verdictTitle = 'VERDICT: SYNTHETIC CLONE DETECTED';
+        const tStr = peakAlertTimestamp !== null ? peakAlertTimestamp.toFixed(1) : '0';
+        verdictDescription = `Strong synthetic voice characteristics identified (first detected at ${tStr}s).`;
+    } else if (warningCount > 0) {
+        overallLevel = 'WARNING';
+        verdictTitle = 'VERDICT: SUSPICIOUS ANOMALIES';
+        verdictDescription = 'Elevated periodic or flat acoustic patterns detected. Potential voice modification.';
+    }
+
+    return {
+        windowCount: timeline.length,
+        avgScore,
+        minScore: minScore === Infinity ? 0.0 : minScore,
+        overallLevel,
+        peakAlertTimestamp,
+        alertCount,
+        warningCount,
+        okCount,
+        verdictTitle,
+        verdictDescription,
+    };
+}
