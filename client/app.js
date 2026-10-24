@@ -538,27 +538,49 @@ if (dropzone && audioFileInput) {
     });
 }
 
-// Preset test clip buttons
+// Preset test clip buttons (fetching authentic and clone speech samples)
+async function loadPresetSample(type) {
+    const sampleFiles = {
+        authentic: { url: '/client/samples/sample_authentic.wav', name: 'authentic_human_speech.wav' },
+        mixed: { url: '/client/samples/sample_mixed.wav', name: 'mixed_authentic_and_clone.wav' },
+        clone: { url: '/client/samples/sample_clone.wav', name: 'ai_voice_clone_threat.wav' },
+    };
+
+    const target = sampleFiles[type];
+    if (target) {
+        try {
+            const resp = await fetch(target.url);
+            if (resp.ok) {
+                const blob = await resp.blob();
+                return new File([blob], target.name, { type: 'audio/wav' });
+            }
+        } catch (e) {
+            console.warn('[CallShield] Failed to fetch server sample, falling back to synthesis:', e);
+        }
+    }
+    return generateDemoAudio(type);
+}
+
 if (btnPresetAuthentic) {
-    btnPresetAuthentic.addEventListener('click', (e) => {
+    btnPresetAuthentic.addEventListener('click', async (e) => {
         e.stopPropagation();
-        const file = generateDemoAudio('authentic');
+        const file = await loadPresetSample('authentic');
         processSelectedFile(file);
     });
 }
 
 if (btnPresetMixed) {
-    btnPresetMixed.addEventListener('click', (e) => {
+    btnPresetMixed.addEventListener('click', async (e) => {
         e.stopPropagation();
-        const file = generateDemoAudio('mixed');
+        const file = await loadPresetSample('mixed');
         processSelectedFile(file);
     });
 }
 
 if (btnPresetClone) {
-    btnPresetClone.addEventListener('click', (e) => {
+    btnPresetClone.addEventListener('click', async (e) => {
         e.stopPropagation();
-        const file = generateDemoAudio('clone');
+        const file = await loadPresetSample('clone');
         processSelectedFile(file);
     });
 }

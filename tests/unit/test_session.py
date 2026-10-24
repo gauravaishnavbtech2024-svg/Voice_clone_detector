@@ -120,6 +120,20 @@ def test_session_engine_chunking_invariance() -> None:
         assert s_bulk.flagged == s_chunk.flagged
         assert s_bulk.reason == s_chunk.reason
 
+    # Engine 3: Fed entire audio array in a single call (all-at-once bulk ingestion)
+    decider3 = AlertDecider(thr=0.0, k=4, n=6)
+    det3 = ScriptedDetector(scores=[0.8, 0.7, -0.5, -0.6])
+    engine3 = SessionEngine(detector=det3, decider=decider3, sample_rate_in=16000)
+    states_single_call = engine3.feed(audio)
+
+    assert len(states_bulk) == len(states_single_call)
+    for s_bulk, s_single in zip(states_bulk, states_single_call, strict=True):
+        assert pytest.approx(s_bulk.t) == s_single.t
+        assert s_bulk.score == s_single.score
+        assert s_bulk.level == s_single.level
+        assert s_bulk.flagged == s_single.flagged
+        assert s_bulk.reason == s_single.reason
+
 
 @pytest.mark.unit
 def test_session_engine_fake_sequence_reaches_alert() -> None:

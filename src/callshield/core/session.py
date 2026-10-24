@@ -76,51 +76,54 @@ class SessionEngine:
         else:
             samples_16k = samples_f32
 
-        self.buffer.append(samples_16k)
-        self.total_samples_16k += len(samples_16k)
-
+        chunk_size = 1600  # 100 ms at 16 kHz
         emitted_states: list[SessionState] = []
 
-        # Check if one or more evaluation horizons have been reached
-        while self.total_samples_16k >= self.next_eval_samples:
-            eval_time_s = round(self.next_eval_samples / 16000.0, 3)
-            self.next_eval_samples += self.HOP_SAMPLES
+        for i in range(0, len(samples_16k), chunk_size):
+            chunk = samples_16k[i : i + chunk_size]
+            self.buffer.append(chunk)
+            self.total_samples_16k += len(chunk)
 
-            # Extract latest buffered audio (up to 4.0s)
-            window = self.buffer.latest(self.WINDOW_SAMPLES)
+            # Check if one or more evaluation horizons have been reached
+            while self.total_samples_16k >= self.next_eval_samples:
+                eval_time_s = round(self.next_eval_samples / 16000.0, 3)
+                self.next_eval_samples += self.HOP_SAMPLES
 
-            # Silence gate: bypass detector if window is silent
-            if is_silent(window, threshold_dbfs=-50.0):
-                current_level = "ALERT" if self.decider.latched else "OK"
+                # Extract latest buffered audio (up to 4.0s)
+                window = self.buffer.latest(self.WINDOW_SAMPLES)
+
+                # Silence gate: bypass detector if window is silent
+                if is_silent(window, threshold_dbfs=-50.0):
+                    current_level = "ALERT" if self.decider.latched else "OK"
+                    emitted_states.append(
+                        SessionState(
+                            t=eval_time_s,
+                            score=0.0,
+                            level=current_level,
+                            flagged=self.decider.flagged,
+                            reason="silence",
+                        )
+                    )
+                    continue
+
+                # Process non-silent window: repeat-pad to exactly 4s and RMS-normalize to -26 dBFS
+                processed_window = crop_or_pad(window, self.WINDOW_SAMPLES)
+                normalized_window = rms_normalize(processed_window, target_dbfs=-26.0)
+
+                # Score with detector
+                score = float(self.detector.score(normalized_window))
+
+                # Update decider
+                level, flagged, _ = self.decider.update(score)
+
                 emitted_states.append(
                     SessionState(
                         t=eval_time_s,
-                        score=0.0,
-                        level=current_level,
-                        flagged=self.decider.flagged,
-                        reason="silence",
+                        score=score,
+                        level=level,
+                        flagged=flagged,
+                        reason="scored",
                     )
                 )
-                continue
-
-            # Process non-silent window: repeat-pad to exactly 4s and RMS-normalize to -26 dBFS
-            processed_window = crop_or_pad(window, self.WINDOW_SAMPLES)
-            normalized_window = rms_normalize(processed_window, target_dbfs=-26.0)
-
-            # Score with detector
-            score = float(self.detector.score(normalized_window))
-
-            # Update decider
-            level, flagged, _ = self.decider.update(score)
-
-            emitted_states.append(
-                SessionState(
-                    t=eval_time_s,
-                    score=score,
-                    level=level,
-                    flagged=flagged,
-                    reason="scored",
-                )
-            )
 
         return emitted_states

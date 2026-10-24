@@ -36,6 +36,7 @@ class TorchDetector(Detector):
         else:
             self.device = torch.device(device)
 
+        self.threshold: float = 0.0
         self.model = VoiceCloneDetectorModel().to(self.device)
         self._load_weights()
         self.model.eval()
@@ -44,8 +45,10 @@ class TorchDetector(Detector):
         checkpoint = torch.load(self.weights_path, map_location=self.device)
         if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
             state_dict = checkpoint["model_state_dict"]
+            self.threshold = float(checkpoint.get("threshold", 0.0))
         elif isinstance(checkpoint, dict):
             state_dict = checkpoint
+            self.threshold = float(checkpoint.get("threshold", 0.0))
         else:
             raise ValueError(f"Unrecognized checkpoint format in {self.weights_path}")
 
@@ -77,4 +80,6 @@ class TorchDetector(Detector):
         if np.isnan(val) or np.isinf(val):
             return 0.0
 
-        return val
+        # Calibrate against model's optimal decision threshold
+        calibrated_score = val - self.threshold
+        return calibrated_score
