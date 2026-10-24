@@ -167,6 +167,12 @@ def main() -> None:
         print(f"Device name: {torch.cuda.get_device_name(0)}")
 
     data_root = Path(args.data_root)
+    # Auto-resolve nested ASVspoof LA directory if user points to datasets/training_dataset
+    if (data_root / "LA" / "LA").is_dir():
+        data_root = data_root / "LA" / "LA"
+    elif (data_root / "LA" / "ASVspoof2019_LA_cm_protocols").is_dir():
+        data_root = data_root / "LA"
+
     train_protocol = data_root / "ASVspoof2019_LA_cm_protocols" / "ASVspoof2019.LA.cm.train.trn.txt"
     train_audio_dir = data_root / "ASVspoof2019_LA_train" / "flac"
 
