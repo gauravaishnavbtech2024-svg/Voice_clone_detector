@@ -47,8 +47,10 @@ htmlcov/
 test-results/
 playwright-report/
 
-# User-provided models (checkpoints)
+# User-provided models (checkpoints) and datasets
 models/
+datasets/
+*.zip
 
 # OS specific
 .DS_Store
