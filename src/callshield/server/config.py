@@ -15,6 +15,9 @@ class ServerSettings(BaseSettings):
     MAX_PENDING_WINDOWS: int = 2
     MODEL_WEIGHTS_PATH: Path | None = None
     DETECTOR_DELAY_MS: float = 0.0
+    MAX_FRAME_BYTES: int = 65536
+    MAX_SESSION_SECONDS: float = 3600.0
+    MAX_SESSIONS: int = 100
 
     model_config = SettingsConfigDict(env_prefix="", case_sensitive=False)
 

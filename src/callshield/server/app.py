@@ -4,6 +4,9 @@ import asyncio
 import base64
 import io
 import json
+import time
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager, suppress
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -34,7 +37,26 @@ from callshield.server.protocol import (
     ScoreResponse,
 )
 
-app = FastAPI(title="Call Shield", version="0.1.0")
+active_sessions: set[WebSocket] = set()
+active_tasks: set[asyncio.Task[Any]] = set()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    """Graceful lifespan shutdown for active WebSocket connections and in-flight tasks."""
+    yield
+    # Cancel in-flight background inference tasks
+    for task in list(active_tasks):
+        if not task.done():
+            task.cancel()
+    # Close open streaming and alert sessions
+    for ws in list(active_sessions):
+        with suppress(Exception):
+            await ws.close(code=status.WS_1001_GOING_AWAY, reason="Server shutting down")
+    active_sessions.clear()
+
+
+app = FastAPI(title="Call Shield", version="0.1.0", lifespan=lifespan)
 
 # Global detector instance and alert hub
 detector = build_detector(
@@ -115,7 +137,13 @@ async def score_audio_file(file: UploadFile) -> ScoreResponse:
 @app.websocket("/ws/stream")
 async def websocket_stream(websocket: WebSocket) -> None:
     """Ingests binary 16 kHz PCM16LE audio chunks from browser microphone."""
+    if len(active_sessions) >= settings.MAX_SESSIONS:
+        await websocket.close(code=1013, reason="Maximum active sessions reached")
+        return
+
     await websocket.accept()
+    active_sessions.add(websocket)
+    start_time = time.monotonic()
     decider = AlertDecider(thr=0.0, k=4, n=6)
     engine = SessionEngine(detector=detector, decider=decider, sample_rate_in=16000)
 
@@ -125,24 +153,53 @@ async def websocket_stream(websocket: WebSocket) -> None:
             if not raw_bytes:
                 continue
 
+            if time.monotonic() - start_time > settings.MAX_SESSION_SECONDS:
+                await websocket.close(
+                    code=status.WS_1008_POLICY_VIOLATION,
+                    reason="Session duration exceeded",
+                )
+                return
+
+            if len(raw_bytes) > settings.MAX_FRAME_BYTES:
+                await websocket.close(
+                    code=status.WS_1008_POLICY_VIOLATION,
+                    reason="Frame size exceeds maximum allowed bytes",
+                )
+                return
+
             # Convert 16-bit PCM little-endian to float32 [-1.0, 1.0]
             samples = np.frombuffer(raw_bytes, dtype=np.int16).astype(np.float32) / 32768.0
 
             # Score off the event loop
-            async with inference_semaphore:
-                states = await asyncio.to_thread(engine.feed, samples)
+            current_task = asyncio.current_task()
+            if current_task is not None:
+                active_tasks.add(current_task)
+            try:
+                async with inference_semaphore:
+                    states = await asyncio.to_thread(engine.feed, samples)
+            finally:
+                if current_task is not None:
+                    active_tasks.discard(current_task)
 
             for state in states:
                 await websocket.send_json(asdict(state))
 
     except WebSocketDisconnect:
         pass
+    finally:
+        active_sessions.discard(websocket)
 
 
 @app.websocket("/twilio")
 async def websocket_twilio(websocket: WebSocket) -> None:
     """Ingests Twilio Media Streams JSON protocol with 8 kHz base64 µ-law audio."""
+    if len(active_sessions) >= settings.MAX_SESSIONS:
+        await websocket.close(code=1013, reason="Maximum active sessions reached")
+        return
+
     await websocket.accept()
+    active_sessions.add(websocket)
+    start_time = time.monotonic()
     user_id: str = "default_user"
     decider = AlertDecider(thr=0.0, k=4, n=6)
     engine = SessionEngine(detector=detector, decider=decider, sample_rate_in=8000)
@@ -150,6 +207,13 @@ async def websocket_twilio(websocket: WebSocket) -> None:
     try:
         while True:
             message_text = await websocket.receive_text()
+            if time.monotonic() - start_time > settings.MAX_SESSION_SECONDS:
+                await websocket.close(
+                    code=status.WS_1008_POLICY_VIOLATION,
+                    reason="Session duration exceeded",
+                )
+                return
+
             try:
                 event_data: dict[str, Any] = json.loads(message_text)
             except Exception:
@@ -170,11 +234,24 @@ async def websocket_twilio(websocket: WebSocket) -> None:
                 payload_b64 = media_data.get("payload")
                 if payload_b64:
                     raw_bytes = base64.b64decode(payload_b64)
+                    if len(raw_bytes) > settings.MAX_FRAME_BYTES:
+                        await websocket.close(
+                            code=status.WS_1008_POLICY_VIOLATION,
+                            reason="Frame size exceeds maximum allowed bytes",
+                        )
+                        return
                     samples_8k = mulaw_decode(raw_bytes)
 
                     # Score off event loop
-                    async with inference_semaphore:
-                        states = await asyncio.to_thread(engine.feed, samples_8k)
+                    current_task = asyncio.current_task()
+                    if current_task is not None:
+                        active_tasks.add(current_task)
+                    try:
+                        async with inference_semaphore:
+                            states = await asyncio.to_thread(engine.feed, samples_8k)
+                    finally:
+                        if current_task is not None:
+                            active_tasks.discard(current_task)
 
                     for state in states:
                         alert_payload = {
@@ -200,6 +277,8 @@ async def websocket_twilio(websocket: WebSocket) -> None:
 
     except WebSocketDisconnect:
         pass
+    finally:
+        active_sessions.discard(websocket)
 
 
 @app.websocket("/ws/alerts")
@@ -213,7 +292,12 @@ async def websocket_alerts(
         await websocket.close(code=4401, reason="Unauthorized")
         return
 
+    if len(active_sessions) >= settings.MAX_SESSIONS:
+        await websocket.close(code=1013, reason="Maximum active sessions reached")
+        return
+
     await websocket.accept()
+    active_sessions.add(websocket)
     queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
     loop = asyncio.get_running_loop()
     hub.subscribe(user_id, queue, loop)
@@ -233,6 +317,7 @@ async def websocket_alerts(
     finally:
         send_task.cancel()
         hub.unsubscribe(user_id, queue)
+        active_sessions.discard(websocket)
 
 
 # ============================================================================
