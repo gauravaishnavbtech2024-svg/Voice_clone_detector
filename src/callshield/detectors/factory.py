@@ -17,6 +17,7 @@ class DetectorConfig:
     weights_path: Path | str | None = None
     scripted_scores: Sequence[float] | None = None
     delay_ms: float = 0.0
+    device: str | None = None
     extra: dict[str, object] = field(default_factory=dict)
 
 
@@ -51,7 +52,10 @@ def build_detector(config: DetectorConfig) -> Detector:
         try:
             from callshield.detectors.torch_detector import TorchDetector  # type: ignore[import-untyped]
 
-            return cast(Detector, TorchDetector(weights_path=Path(config.weights_path)))
+            return cast(
+                Detector,
+                TorchDetector(weights_path=Path(config.weights_path), device=config.device),
+            )
         except ImportError as err:
             raise RuntimeError(
                 "PyTorch is not installed. Install torch to use TorchDetector."
