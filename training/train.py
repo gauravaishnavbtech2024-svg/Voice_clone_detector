@@ -18,7 +18,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
-from training.dataset import ASVspoofLADataset
+from training.dataset import ASVspoofLADataset, DirectoryVoiceCloneDataset
 from training.model import VoiceCloneDetectorModel
 
 
@@ -153,19 +153,19 @@ def evaluate(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train Call Shield Voice Clone Detector")
-    parser.add_argument("--epochs", type=int, default=10, help="Number of training epochs")
+    parser.add_argument("--epochs", type=int, default=15, help="Number of training epochs")
     parser.add_argument("--batch-size", type=int, default=32, help="Batch size per step")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--weight-decay", type=float, default=1e-4, help="Weight decay")
-    parser.add_argument("--data-root", type=str, default="datasets/training_dataset", help="Path to ASVspoof directory")
+    parser.add_argument("--data-root", type=str, default="datasets/new training dataset", help="Path to training dataset")
     parser.add_argument("--output-dir", type=str, default="models", help="Directory to save best.pt")
-    parser.add_argument("--resume", type=str, default=None, help="Checkpoint path to resume training from (e.g. models/best.pt)")
+    parser.add_argument("--resume", type=str, default=None, help="Checkpoint path to resume training from")
     parser.add_argument(
         "--split",
         type=str,
         default="train",
         choices=["train", "eval", "remaining", "all", "all-la-pa"],
-        help="Dataset split to train on: 'train' (25k), 'remaining'/'eval' (71k), 'all' (96k), 'all-la-pa'",
+        help="Dataset split (for ASVspoof datasets)",
     )
     parser.add_argument("--max-train-samples", type=int, default=None, help="Limit train samples for fast testing")
     parser.add_argument("--max-dev-samples", type=int, default=None, help="Limit dev samples for fast testing")
@@ -181,56 +181,58 @@ def main() -> None:
         print(f"Device name: {torch.cuda.get_device_name(0)}")
 
     data_root = Path(args.data_root)
-    # Auto-resolve nested ASVspoof LA directory if user points to datasets/training_dataset
-    if (data_root / "LA" / "LA").is_dir():
-        la_root = data_root / "LA" / "LA"
-    elif (data_root / "LA" / "ASVspoof2019_LA_cm_protocols").is_dir():
-        la_root = data_root / "LA"
-    else:
-        la_root = data_root
 
-    train_protocol = la_root / "ASVspoof2019_LA_cm_protocols" / "ASVspoof2019.LA.cm.train.trn.txt"
-    train_audio_dir = la_root / "ASVspoof2019_LA_train" / "flac"
-
-    eval_protocol = la_root / "ASVspoof2019_LA_cm_protocols" / "ASVspoof2019.LA.cm.eval.trl.txt"
-    eval_audio_dir = la_root / "ASVspoof2019_LA_eval" / "flac"
-
-    dev_protocol = la_root / "ASVspoof2019_LA_cm_protocols" / "ASVspoof2019.LA.cm.dev.trl.txt"
-    dev_audio_dir = la_root / "ASVspoof2019_LA_dev" / "flac"
-
-    # Select training partitions based on --split
-    if args.split in ("remaining", "eval"):
-        print("Training Partition: REMAINING evaluation set (71,237 clips)")
-        train_pairs = [(eval_protocol, eval_audio_dir)]
-    elif args.split == "all":
-        print("Training Partition: ALL LA sets combined (Train 25k + Eval 71k = 96,617 clips)")
-        train_pairs = [(train_protocol, train_audio_dir), (eval_protocol, eval_audio_dir)]
-    elif args.split == "all-la-pa":
-        print("Training Partition: ALL LA and PA sets combined")
-        pa_root = data_root
-        if (pa_root / "PA" / "PA").is_dir():
-            pa_root = pa_root / "PA" / "PA"
-        elif (pa_root / "PA").is_dir():
-            pa_root = pa_root / "PA"
-        pa_proto = pa_root / "ASVspoof2019_PA_cm_protocols" / "ASVspoof2019.PA.cm.train.trn.txt"
-        pa_audio = pa_root / "ASVspoof2019_PA_train" / "flac"
-        train_pairs = [(train_protocol, train_audio_dir), (eval_protocol, eval_audio_dir), (pa_proto, pa_audio)]
-    else:
-        print("Training Partition: Standard Train set (25,380 clips)")
-        train_pairs = [(train_protocol, train_audio_dir)]
+    # Check if data_root is a directory-based dataset (e.g. 'new training dataset' with real_samples)
+    is_directory_dataset = (data_root / "real_samples").is_dir() or any(
+        (data_root / sub / "real_samples").is_dir() for sub in ["", "datasets"] if (data_root / sub).is_dir()
+    )
 
     print("\n--- Loading Datasets ---")
-    train_dataset = ASVspoofLADataset(
-        protocol_path=train_pairs,
-        is_train=True,
-        max_samples=args.max_train_samples,
-    )
-    dev_dataset = ASVspoofLADataset(
-        protocol_path=dev_protocol,
-        audio_dir=dev_audio_dir,
-        is_train=False,
-        max_samples=args.max_dev_samples,
-    )
+    if is_directory_dataset:
+        target_dir = data_root if (data_root / "real_samples").is_dir() else (data_root / "datasets" / "new training dataset")
+        print(f"Dataset Mode: Directory structure at '{target_dir}'")
+        train_dataset, dev_dataset = DirectoryVoiceCloneDataset.create_train_val_split(
+            data_dir=target_dir,
+            val_ratio=0.15,
+            seed=args.seed,
+            max_samples=args.max_train_samples,
+        )
+    else:
+        # ASVspoof protocol loader
+        if (data_root / "LA" / "LA").is_dir():
+            la_root = data_root / "LA" / "LA"
+        elif (data_root / "LA" / "ASVspoof2019_LA_cm_protocols").is_dir():
+            la_root = data_root / "LA"
+        else:
+            la_root = data_root
+
+        train_protocol = la_root / "ASVspoof2019_LA_cm_protocols" / "ASVspoof2019.LA.cm.train.trn.txt"
+        train_audio_dir = la_root / "ASVspoof2019_LA_train" / "flac"
+
+        eval_protocol = la_root / "ASVspoof2019_LA_cm_protocols" / "ASVspoof2019.LA.cm.eval.trl.txt"
+        eval_audio_dir = la_root / "ASVspoof2019_LA_eval" / "flac"
+
+        dev_protocol = la_root / "ASVspoof2019_LA_cm_protocols" / "ASVspoof2019.LA.cm.dev.trl.txt"
+        dev_audio_dir = la_root / "ASVspoof2019_LA_dev" / "flac"
+
+        if args.split in ("remaining", "eval"):
+            train_pairs = [(eval_protocol, eval_audio_dir)]
+        elif args.split == "all":
+            train_pairs = [(train_protocol, train_audio_dir), (eval_protocol, eval_audio_dir)]
+        else:
+            train_pairs = [(train_protocol, train_audio_dir)]
+
+        train_dataset = ASVspoofLADataset(
+            protocol_path=train_pairs,
+            is_train=True,
+            max_samples=args.max_train_samples,
+        )
+        dev_dataset = ASVspoofLADataset(
+            protocol_path=dev_protocol,
+            audio_dir=dev_audio_dir,
+            is_train=False,
+            max_samples=args.max_dev_samples,
+        )
 
     train_loader = DataLoader(
         train_dataset,
