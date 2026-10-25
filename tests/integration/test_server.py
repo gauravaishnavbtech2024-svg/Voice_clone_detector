@@ -183,11 +183,18 @@ def test_twilio_streaming_publishes_to_alerts_hub(
 
 
 @pytest.mark.integration
-def test_two_simultaneous_twilio_sessions_isolation(client: TestClient) -> None:
+def test_two_simultaneous_twilio_sessions_isolation(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Two simultaneous Twilio sessions do not leak state or alerts to each other."""
     user1 = "user_alpha"
     user2 = "user_beta"
     token = settings.CALLSHIELD_TOKEN
+
+    import sys
+
+    app_mod = sys.modules["callshield.server.app"]
+    monkeypatch.setattr(app_mod, "detector", FakeDetector())
 
     with (
         client.websocket_connect(f"/ws/alerts?user_id={user1}&token={token}") as ws_sub1,

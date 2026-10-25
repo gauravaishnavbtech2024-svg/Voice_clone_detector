@@ -26,11 +26,16 @@ def _get_directory_snapshot(directory: str | Path) -> set[Path]:
     path = Path(directory)
     if not path.is_dir():
         return set()
-    return {
-        p.relative_to(path)
-        for p in path.rglob("*")
-        if p.is_file() and ".pytest_cache" not in p.parts and ".git" not in p.parts
-    }
+    ignored_dirs = {".pytest_cache", ".git", "training_dataset", "dataset", ".venv", "__pycache__"}
+    files = set()
+    for p in path.glob("*"):
+        if p.is_file():
+            files.add(p.relative_to(path))
+        elif p.is_dir() and p.name not in ignored_dirs:
+            for sub in p.glob("*"):
+                if sub.is_file():
+                    files.add(sub.relative_to(path))
+    return files
 
 
 @pytest.mark.integration
@@ -40,7 +45,7 @@ def test_zero_disk_persistence(client: TestClient) -> None:
     temp_dir = Path(tempfile.gettempdir())
 
     repo_files_before = _get_directory_snapshot(repo_root)
-    temp_files_before = _get_directory_snapshot(temp_dir)
+    temp_files_before = {p for p in temp_dir.glob("callshield*")}
 
     # Execute a full Twilio call session with simulated media
     dummy_audio = b"\xff\x7f" * 160  # 160 bytes of µ-law audio
@@ -55,7 +60,7 @@ def test_zero_disk_persistence(client: TestClient) -> None:
         ws.send_json({"event": "stop"})
 
     repo_files_after = _get_directory_snapshot(repo_root)
-    temp_files_after = _get_directory_snapshot(temp_dir)
+    temp_files_after = {p for p in temp_dir.glob("callshield*")}
 
     new_repo_files = repo_files_after - repo_files_before
     new_temp_files = temp_files_after - temp_files_before

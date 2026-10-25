@@ -27,6 +27,13 @@ def get_free_port() -> int:
 @pytest.fixture(scope="module")
 def live_server_ws_url() -> Generator[str, None, None]:
     """Starts a live Uvicorn server in a daemon thread for integration testing."""
+    import sys
+    from callshield.detectors.fake import FakeDetector
+
+    app_module = sys.modules["callshield.server.app"]
+    old_det = app_module.detector
+    app_module.detector = FakeDetector()
+
     port = get_free_port()
     config = uvicorn.Config(app=app, host="127.0.0.1", port=port, log_level="warning")
     server = uvicorn.Server(config)
@@ -35,10 +42,12 @@ def live_server_ws_url() -> Generator[str, None, None]:
 
     # Wait for server liveness
     time.sleep(0.6)
-    yield f"ws://127.0.0.1:{port}"
-
-    server.should_exit = True
-    thread.join(timeout=2.0)
+    try:
+        yield f"ws://127.0.0.1:{port}"
+    finally:
+        server.should_exit = True
+        thread.join(timeout=2.0)
+        app_module.detector = old_det
 
 
 @pytest.mark.integration

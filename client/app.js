@@ -49,8 +49,6 @@ const monitorHeading = document.getElementById('monitor-heading');
 const monitorSubtext = document.getElementById('monitor-subtext');
 const btnMicToggle = document.getElementById('btn-mic-toggle');
 const btnMicLabel = document.getElementById('btn-mic-label');
-const btnTestTone = document.getElementById('btn-test-tone');
-const btnToneLabel = document.getElementById('btn-tone-label');
 const sparklineCanvas = document.getElementById('sparkline-canvas');
 
 // ============================================================================
@@ -489,10 +487,6 @@ const timelineBarTrack = document.getElementById('timeline-bar-track');
 const tableWindowCount = document.getElementById('table-window-count');
 const diagnosticsTableBody = document.getElementById('diagnostics-table-body');
 
-const btnPresetAuthentic = document.getElementById('btn-preset-authentic');
-const btnPresetMixed = document.getElementById('btn-preset-mixed');
-const btnPresetClone = document.getElementById('btn-preset-clone');
-
 let activeAudioTimeline = [];
 
 // Drag & drop handlers
@@ -536,100 +530,6 @@ if (dropzone && audioFileInput) {
             processSelectedFile(e.target.files[0]);
         }
     });
-}
-
-// Preset test clip buttons (fetching authentic and clone speech samples)
-async function loadPresetSample(type) {
-    const sampleFiles = {
-        authentic: { url: '/client/samples/sample_authentic.wav', name: 'authentic_human_speech.wav' },
-        mixed: { url: '/client/samples/sample_mixed.wav', name: 'mixed_authentic_and_clone.wav' },
-        clone: { url: '/client/samples/sample_clone.wav', name: 'ai_voice_clone_threat.wav' },
-    };
-
-    const target = sampleFiles[type];
-    if (target) {
-        try {
-            const resp = await fetch(target.url);
-            if (resp.ok) {
-                const blob = await resp.blob();
-                return new File([blob], target.name, { type: 'audio/wav' });
-            }
-        } catch (e) {
-            console.warn('[CallShield] Failed to fetch server sample, falling back to synthesis:', e);
-        }
-    }
-    return generateDemoAudio(type);
-}
-
-if (btnPresetAuthentic) {
-    btnPresetAuthentic.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        const file = await loadPresetSample('authentic');
-        processSelectedFile(file);
-    });
-}
-
-if (btnPresetMixed) {
-    btnPresetMixed.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        const file = await loadPresetSample('mixed');
-        processSelectedFile(file);
-    });
-}
-
-if (btnPresetClone) {
-    btnPresetClone.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        const file = await loadPresetSample('clone');
-        processSelectedFile(file);
-    });
-}
-
-/**
- * Synthesizes test WAV clips in memory for instant 1-click verification.
- */
-function generateDemoAudio(type) {
-    const sampleRate = 16000;
-    const duration = type === 'mixed' ? 10.0 : 6.0;
-    const numSamples = Math.floor(sampleRate * duration);
-    const samples = new Float32Array(numSamples);
-
-    if (type === 'authentic') {
-        // High spectral flatness / speech-like formant harmonics
-        for (let i = 0; i < numSamples; i++) {
-            const t = i / sampleRate;
-            const env = 0.5 + 0.5 * Math.sin(2 * Math.PI * 1.5 * t);
-            const noise = (Math.random() * 2 - 1) * 0.45;
-            const formant1 = Math.sin(2 * Math.PI * 220 * t) * 0.2;
-            const formant2 = Math.sin(2 * Math.PI * 880 * t) * 0.15;
-            samples[i] = (noise + formant1 + formant2) * env * 0.6;
-        }
-    } else if (type === 'clone') {
-        // Pure single-frequency 440 Hz sinusoidal tone
-        for (let i = 0; i < numSamples; i++) {
-            const t = i / sampleRate;
-            samples[i] = Math.sin(2 * Math.PI * 440 * t) * 0.5;
-        }
-    } else if (type === 'mixed') {
-        // 4s authentic speech followed by 6s synthetic clone tone
-        const switchIdx = sampleRate * 4;
-        for (let i = 0; i < numSamples; i++) {
-            const t = i / sampleRate;
-            if (i < switchIdx) {
-                const env = 0.5 + 0.5 * Math.sin(2 * Math.PI * 2.0 * t);
-                const noise = (Math.random() * 2 - 1) * 0.45;
-                const formant = Math.sin(2 * Math.PI * 300 * t) * 0.2;
-                samples[i] = (noise + formant) * env * 0.6;
-            } else {
-                samples[i] = Math.sin(2 * Math.PI * 440 * t) * 0.5;
-            }
-        }
-    }
-
-    const wavBuffer = encodeWAV(samples, sampleRate);
-    const blob = new Blob([wavBuffer], { type: 'audio/wav' });
-    const filename = `demo_${type}_sample.wav`;
-    return new File([blob], filename, { type: 'audio/wav' });
 }
 
 /**
