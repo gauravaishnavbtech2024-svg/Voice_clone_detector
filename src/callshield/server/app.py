@@ -56,7 +56,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     active_sessions.clear()
 
 
+from fastapi.middleware.cors import CORSMiddleware
+
 app = FastAPI(title="Call Shield", version="0.1.0", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Global detector instance and alert hub
 detector = build_detector(

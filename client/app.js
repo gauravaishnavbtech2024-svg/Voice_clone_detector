@@ -16,7 +16,6 @@ let ws = null;
 let reconnectAttempts = 0;
 let reconnectTimeout = null;
 let isRecording = false;
-let isInjectingTone = false;
 let dismissedAlert = false;
 
 // Audio Context & Graph
@@ -25,7 +24,6 @@ let micStream = null;
 let micSource = null;
 let workletNode = null;
 let silentGain = null;
-let testOscillator = null;
 
 // Telemetry History for Sparkline
 const MAX_HISTORY = 40;
@@ -56,6 +54,9 @@ const sparklineCanvas = document.getElementById('sparkline-canvas');
 // ============================================================================
 
 function getWebSocketUrl() {
+    if (window.location.protocol === 'file:' || !window.location.host) {
+        return 'ws://127.0.0.1:8000/ws/stream';
+    }
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     return `${protocol}//${window.location.host}/ws/stream`;
 }
@@ -246,7 +247,7 @@ function stopMicrophone() {
     isRecording = false;
     btnMicToggle.classList.remove('recording');
     btnMicLabel.textContent = 'Start Voice Monitor';
-    telemetryStatus.textContent = isInjectingTone ? 'Testing Tone' : 'Idle';
+    telemetryStatus.textContent = 'Idle';
 }
 
 btnMicToggle.addEventListener('click', async () => {
@@ -262,55 +263,7 @@ btnMicToggle.addEventListener('click', async () => {
     }
 });
 
-// ============================================================================
-// Synthetic Test Tone Generator (440 Hz Sinusoid)
-// ============================================================================
 
-async function startTestTone() {
-    await ensureAudioContext();
-
-    testOscillator = audioCtx.createOscillator();
-    testOscillator.type = 'sine';
-    testOscillator.frequency.setValueAtTime(440, audioCtx.currentTime);
-
-    // Connect oscillator directly into worklet input
-    testOscillator.connect(workletNode);
-    testOscillator.start();
-
-    isInjectingTone = true;
-    btnTestTone.classList.add('active');
-    btnToneLabel.textContent = 'Stop Test Tone';
-    telemetryStatus.textContent = 'Injecting 440Hz Tone';
-}
-
-function stopTestTone() {
-    if (testOscillator) {
-        try {
-            testOscillator.stop();
-            testOscillator.disconnect();
-        } catch (_) {
-            // Ignore already stopped oscillator
-        }
-        testOscillator = null;
-    }
-
-    isInjectingTone = false;
-    btnTestTone.classList.remove('active');
-    btnToneLabel.textContent = 'Inject Synthetic Tone (440Hz)';
-    telemetryStatus.textContent = isRecording ? 'Monitoring Live' : 'Idle';
-}
-
-btnTestTone.addEventListener('click', async () => {
-    try {
-        if (!isInjectingTone) {
-            await startTestTone();
-        } else {
-            stopTestTone();
-        }
-    } catch (err) {
-        console.error('[CallShield] Failed to start test tone:', err);
-    }
-});
 
 // ============================================================================
 // 60 FPS Canvas Sparkline Visualizer
