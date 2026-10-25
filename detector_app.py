@@ -42,18 +42,155 @@ model.eval()
 print(f"[*] Ready! Using threshold: {THRESHOLD:.3f}")
 
 
+import os
+import ctypes
+from ctypes import wintypes, c_void_p, c_uint32, POINTER, byref, Structure, c_ulong, c_int, c_longlong, cast
+
+
+def _read_audio_windows_mf(file_path: str) -> np.ndarray:
+    """Decodes audio using native Windows Media Foundation (supports .m4a, .aac, .mp4, .wma)."""
+    mfplat = ctypes.windll.mfplat
+    mfrw = ctypes.windll.mfreadwrite
+    ole32 = ctypes.windll.ole32
+
+    ole32.CoInitialize(None)
+    hr = mfplat.MFStartup((2 << 16) | 138, 0)
+    if hr != 0:
+        ole32.CoUninitialize()
+        raise RuntimeError(f"MFStartup failed: 0x{hr & 0xFFFFFFFF:08X}")
+
+    abs_path = os.path.abspath(file_path)
+    pReader = c_void_p()
+    hr = mfrw.MFCreateSourceReaderFromURL(wintypes.LPCWSTR(abs_path), None, byref(pReader))
+    if hr != 0 or not pReader.value:
+        mfplat.MFShutdown()
+        ole32.CoUninitialize()
+        raise RuntimeError(f"MFCreateSourceReaderFromURL failed: 0x{hr & 0xFFFFFFFF:08X}")
+
+    def call_v(obj, idx, restype, argtypes, *args):
+        vtbl = cast(obj, POINTER(POINTER(c_void_p))).contents[idx]
+        proto = ctypes.WINFUNCTYPE(restype, c_void_p, *argtypes)
+        return proto(vtbl)(obj, *args)
+
+    try:
+        # Deselect all streams, select first audio stream
+        call_v(pReader, 4, c_int, [c_uint32, wintypes.BOOL], c_uint32(0xFFFFFFFE), wintypes.BOOL(False))
+        call_v(pReader, 4, c_int, [c_uint32, wintypes.BOOL], c_uint32(0xFFFFFFFD), wintypes.BOOL(True))
+
+        pType = c_void_p()
+        mfplat.MFCreateMediaType(byref(pType))
+
+        class WAVEFORMATEX(Structure):
+            _fields_ = [
+                ("wFormatTag", wintypes.WORD),
+                ("nChannels", wintypes.WORD),
+                ("nSamplesPerSec", wintypes.DWORD),
+                ("nAvgBytesPerSec", wintypes.DWORD),
+                ("nBlockAlign", wintypes.WORD),
+                ("wBitsPerSample", wintypes.WORD),
+                ("cbSize", wintypes.WORD),
+            ]
+
+        # Configure output format: 16kHz, 16-bit, Mono PCM
+        wfx = WAVEFORMATEX(1, 1, 16000, 32000, 2, 16, 0)
+        mfplat.MFInitMediaTypeFromWaveFormatEx(pType, byref(wfx), ctypes.sizeof(wfx))
+        call_v(pReader, 7, c_int, [c_uint32, c_void_p, c_void_p], c_uint32(0xFFFFFFFD), None, pType)
+        call_v(pType, 2, c_ulong, [])
+
+        audio_bytes = bytearray()
+        actual_stream = c_uint32()
+        flags = c_uint32()
+        timestamp = c_longlong()
+        pSample = c_void_p()
+
+        while True:
+            pSample.value = None
+            hr = call_v(
+                pReader, 9, c_int,
+                [c_uint32, c_uint32, POINTER(c_uint32), POINTER(c_uint32), POINTER(c_longlong), POINTER(c_void_p)],
+                c_uint32(0xFFFFFFFD),
+                c_uint32(0),
+                byref(actual_stream),
+                byref(flags),
+                byref(timestamp),
+                byref(pSample),
+            )
+            if hr != 0 or (flags.value & 0x00000001) or not pSample.value:
+                break
+
+            pBuf = c_void_p()
+            hr = call_v(pSample, 41, c_int, [POINTER(c_void_p)], byref(pBuf))
+            if hr == 0 and pBuf.value:
+                pData = c_void_p()
+                maxLen = c_uint32()
+                curLen = c_uint32()
+                hr = call_v(
+                    pBuf, 3, c_int,
+                    [POINTER(c_void_p), POINTER(c_uint32), POINTER(c_uint32)],
+                    byref(pData), byref(maxLen), byref(curLen)
+                )
+                if hr == 0 and pData.value:
+                    if curLen.value > 0:
+                        audio_bytes.extend(ctypes.string_at(pData.value, curLen.value))
+                    call_v(pBuf, 4, c_int, [])
+                call_v(pBuf, 2, c_ulong, [])
+            call_v(pSample, 2, c_ulong, [])
+
+        call_v(pReader, 2, c_ulong, [])
+        pcm16 = np.frombuffer(audio_bytes, dtype=np.int16)
+        return (pcm16.astype(np.float32) / 32768.0).astype(np.float32)
+    finally:
+        mfplat.MFShutdown()
+        ole32.CoUninitialize()
+
+
+def load_audio(file_path: str) -> np.ndarray:
+    """Universal audio loader supporting .wav, .mp3, .m4a, .aac, .flac, .ogg."""
+    ext = Path(file_path).suffix.lower()
+
+    # Fast path for soundfile-supported formats
+    if ext in [".wav", ".flac", ".ogg", ".mp3"]:
+        try:
+            data, sr = sf.read(file_path, dtype="float32")
+            if data.ndim > 1:
+                data = data.mean(axis=1)
+            if sr != 16000:
+                from scipy.signal import resample_poly
+                g = math.gcd(int(sr), 16000)
+                data = resample_poly(data, up=16000 // g, down=int(sr) // g).astype(np.float32)
+            return data
+        except Exception:
+            pass
+
+    # Windows Media Foundation decoder (handles .m4a, .aac, .mp4, .wma, etc.)
+    try:
+        return _read_audio_windows_mf(file_path)
+    except Exception as e_mf:
+        # Fallback: audioread
+        try:
+            import audioread
+            with audioread.audio_open(file_path) as f:
+                sr = f.samplerate
+                channels = f.channels
+                buf = bytearray()
+                for chunk in f:
+                    buf.extend(chunk)
+                pcm16 = np.frombuffer(buf, dtype=np.int16)
+                data = pcm16.astype(np.float32) / 32768.0
+                if channels > 1:
+                    data = data.reshape(-1, channels).mean(axis=1)
+                if sr != 16000:
+                    from scipy.signal import resample_poly
+                    g = math.gcd(int(sr), 16000)
+                    data = resample_poly(data, up=16000 // g, down=int(sr) // g).astype(np.float32)
+                return data.astype(np.float32)
+        except Exception as e_ar:
+            raise ValueError(f"Could not decode audio file: {e_mf}") from e_ar
+
+
 def classify_audio(file_path: str) -> dict[str, object]:
     """Reads audio file, slices into 4s windows, and runs model."""
-    data, sr = sf.read(file_path, dtype="float32")
-    if data.ndim > 1:
-        data = data.mean(axis=1)
-
-    # Resample to 16 kHz if necessary
-    if sr != 16000:
-        from scipy.signal import resample_poly
-        g = math.gcd(int(sr), 16000)
-        data = resample_poly(data, up=16000 // g, down=int(sr) // g).astype(np.float32)
-
+    data = load_audio(file_path)
     total_samples = len(data)
     win_len = 64000  # 4 seconds at 16 kHz
     hop_len = 16000  # 1 second hop
@@ -129,7 +266,7 @@ class DetectorApp:
         # Select Button
         self.btn_select = tk.Button(
             root,
-            text="Select Audio File (.wav, .mp3, .flac)",
+            text="Select Audio File (.wav, .mp3, .m4a, .flac)",
             font=("Arial", 12, "bold"),
             bg="#0066cc",
             fg="#ffffff",
@@ -189,8 +326,12 @@ class DetectorApp:
         file_path = filedialog.askopenfilename(
             title="Choose Audio File",
             filetypes=[
-                ("Audio Files", "*.wav *.mp3 *.flac *.ogg *.m4a"),
-                ("All Files", "*.*"),
+                ("All Supported Audio", "*.wav *.mp3 *.m4a *.aac *.flac *.ogg *.wma"),
+                ("M4A Voice Recording (*.m4a)", "*.m4a"),
+                ("WAV Audio (*.wav)", "*.wav"),
+                ("MP3 Audio (*.mp3)", "*.mp3"),
+                ("FLAC Lossless (*.flac)", "*.flac"),
+                ("All Files (*.*)", "*.*"),
             ],
         )
         if not file_path:
