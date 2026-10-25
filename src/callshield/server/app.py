@@ -153,7 +153,7 @@ async def score_audio_file(file: UploadFile) -> ScoreResponse:
     else:
         samples_16k = audio_f32
 
-    decider = AlertDecider(thr=0.0, k=4, n=6)
+    decider = AlertDecider(thr=0.0, k=4, n=6, auto_recover=True, recovery_consecutive_ok=3)
     engine = SessionEngine(detector=detector, decider=decider, sample_rate_in=16000)
 
     # Run scoring off event loop
@@ -174,7 +174,7 @@ async def websocket_stream(websocket: WebSocket) -> None:
     await websocket.accept()
     active_sessions.add(websocket)
     start_time = time.monotonic()
-    decider = AlertDecider(thr=0.0, k=4, n=6)
+    decider = AlertDecider(thr=0.0, k=4, n=6, auto_recover=True, recovery_consecutive_ok=3)
     engine = SessionEngine(detector=detector, decider=decider, sample_rate_in=16000)
 
     try:

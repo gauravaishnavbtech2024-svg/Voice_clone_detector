@@ -55,10 +55,12 @@ class SessionEngine:
         detector: Any,
         decider: AlertDecider,
         sample_rate_in: int = 16000,
+        silence_threshold_dbfs: float = -42.0,
     ) -> None:
         self.detector = detector
         self.decider = decider
         self.sample_rate_in = sample_rate_in
+        self.silence_threshold_dbfs = float(silence_threshold_dbfs)
 
         self.buffer = RollingBuffer(capacity_samples=self.WINDOW_SAMPLES)
         self.total_samples_16k: int = 0
@@ -92,8 +94,9 @@ class SessionEngine:
                 # Extract latest buffered audio (up to 4.0s)
                 window = self.buffer.latest(self.WINDOW_SAMPLES)
 
-                # Silence gate: bypass detector if window is silent
-                if is_silent(window, threshold_dbfs=-50.0):
+                # Silence gate: bypass detector if window is silent or has no speech peak
+                peak = float(np.max(np.abs(window))) if len(window) > 0 else 0.0
+                if is_silent(window, threshold_dbfs=self.silence_threshold_dbfs) or peak < 0.012:
                     current_level = "ALERT" if self.decider.latched else "OK"
                     emitted_states.append(
                         SessionState(
@@ -106,8 +109,9 @@ class SessionEngine:
                     )
                     continue
 
-                # Process non-silent window: repeat-pad to exactly 4s and RMS-normalize to -26 dBFS
-                processed_window = crop_or_pad(window, self.WINDOW_SAMPLES)
+                # Remove DC bias to prevent filterbank distortion
+                window_clean = window - float(np.mean(window))
+                processed_window = crop_or_pad(window_clean, self.WINDOW_SAMPLES)
                 normalized_window = rms_normalize(processed_window, target_dbfs=-26.0)
 
                 # Score with detector

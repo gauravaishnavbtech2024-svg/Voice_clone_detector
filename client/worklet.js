@@ -2,7 +2,8 @@
  * Call Shield AudioWorkletProcessor
  *
  * Runs off the browser main thread in Web Audio rendering thread.
- * Downsamples incoming microphone audio from hardware sample rate to 16 kHz,
+ * Downsamples incoming microphone audio from hardware sample rate to 16 kHz
+ * with continuous phase tracking (preventing frame boundary truncation),
  * accumulates ~100 ms frames (1600 samples), quantizes to 16-bit PCM little-endian,
  * and transfers to the main thread via MessagePort.
  */
@@ -12,7 +13,7 @@ class CallShieldAudioProcessor extends AudioWorkletProcessor {
         super();
         this.buffer16k = [];
         this.frameSamples16k = 1600; // 100 ms at 16,000 Hz
-        this.srcRate = currentFrame ? 48000 : 48000; // Will be set dynamically from parameters or context
+        this.phase = 0.0;
     }
 
     process(inputs) {
@@ -26,19 +27,26 @@ class CallShieldAudioProcessor extends AudioWorkletProcessor {
             return true;
         }
 
-        // Downsample incoming block to 16 kHz using linear interpolation
         const srcRate = sampleRate; // Global AudioWorkletGlobalScope.sampleRate
         const targetRate = 16000;
-        const ratio = srcRate / targetRate;
-        const outLength = Math.floor(channelData.length / ratio);
 
-        for (let i = 0; i < outLength; i++) {
-            const srcPos = i * ratio;
-            const idx = Math.floor(srcPos);
-            const frac = srcPos - idx;
-            const s1 = channelData[idx] || 0.0;
-            const s2 = (idx + 1 < channelData.length) ? channelData[idx + 1] : s1;
-            this.buffer16k.push(s1 + frac * (s2 - s1));
+        if (srcRate === targetRate) {
+            // Direct copy when already at 16 kHz (zero distortion, zero latency)
+            for (let i = 0; i < channelData.length; i++) {
+                this.buffer16k.push(channelData[i]);
+            }
+        } else {
+            // Continuous phase interpolation without frame boundary dropping
+            const ratio = srcRate / targetRate;
+            while (this.phase < channelData.length) {
+                const idx = Math.floor(this.phase);
+                const frac = this.phase - idx;
+                const s1 = channelData[idx] || 0.0;
+                const s2 = (idx + 1 < channelData.length) ? channelData[idx + 1] : s1;
+                this.buffer16k.push(s1 + frac * (s2 - s1));
+                this.phase += ratio;
+            }
+            this.phase -= channelData.length;
         }
 
         // Whenever we accumulate >= 100 ms of 16 kHz audio, emit a PCM16 packet

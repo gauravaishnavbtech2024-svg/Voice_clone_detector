@@ -186,7 +186,11 @@ if (btnDismissAlert) {
 async function ensureAudioContext() {
     if (!audioCtx) {
         const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-        audioCtx = new AudioContextClass();
+        try {
+            audioCtx = new AudioContextClass({ sampleRate: 16000 });
+        } catch (_) {
+            audioCtx = new AudioContextClass();
+        }
     }
     if (audioCtx.state === 'suspended') {
         await audioCtx.resume();
