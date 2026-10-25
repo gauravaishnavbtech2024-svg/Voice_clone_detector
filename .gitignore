@@ -52,6 +52,7 @@ models/
 datasets/
 *.zip
 
-# OS specific
+# OS & Editor specific
 .DS_Store
 Thumbs.db
+.vscode/
