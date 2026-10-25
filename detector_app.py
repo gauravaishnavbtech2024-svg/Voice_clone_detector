@@ -23,6 +23,7 @@ import sys
 import tempfile
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+from typing import Any, Callable, TypedDict, cast as type_cast
 import webbrowser
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -34,6 +35,34 @@ import soundfile as sf
 import torch
 
 from training.model import VoiceCloneDetectorModel
+
+
+class WindowRecord(TypedDict):
+    index: int
+    time_range: str
+    time_start: float
+    status: str
+    score: float
+    is_silent: bool
+
+
+class ClassificationResult(TypedDict):
+    status: str
+    duration: float
+    mean_score: float
+    median_score: float
+    min_score: float
+    max_score: float
+    is_clone: bool
+    window_count: int
+    active_windows: int
+    silent_windows: int
+    flagged_ratio: float
+    confidence: int
+    details: str
+    window_records: list[WindowRecord]
+    raw_data: np.ndarray
+
 
 # ==============================================================================
 # Model Loading & Torch Device Configuration
@@ -56,9 +85,9 @@ model.eval()
 # Check for Windows sound playback module
 try:
     import winsound
-
     HAS_WINSOUND = True
 except ImportError:
+    winsound = None  # type: ignore[assignment]
     HAS_WINSOUND = False
 
 
@@ -86,10 +115,10 @@ def _read_audio_windows_mf(file_path: str) -> np.ndarray:
         ole32.CoUninitialize()
         raise RuntimeError(f"MFCreateSourceReaderFromURL failed: 0x{hr & 0xFFFFFFFF:08X}")
 
-    def call_v(obj, idx, restype, argtypes, *args):
-        vtbl = cast(obj, POINTER(POINTER(c_void_p))).contents[idx]
+    def call_v(obj: Any, idx: int, restype: Any, argtypes: list[Any], *args: Any) -> Any:
+        vtbl = type_cast(Any, cast(obj, POINTER(POINTER(c_void_p))).contents)
         proto = ctypes.WINFUNCTYPE(restype, c_void_p, *argtypes)
-        return proto(vtbl)(obj, *args)
+        return proto(vtbl[idx])(obj, *args)
 
     try:
         call_v(pReader, 4, c_int, [c_uint32, wintypes.BOOL], c_uint32(0xFFFFFFFE), wintypes.BOOL(False))
@@ -213,7 +242,7 @@ def is_window_silent(w: np.ndarray, threshold_dbfs: float = -42.0) -> bool:
     return bool(dbfs < threshold_dbfs or peak < 0.012)
 
 
-def classify_audio(file_path: str) -> dict[str, object]:
+def classify_audio(file_path: str) -> ClassificationResult:
     """Reads audio file, applies VAD silence filtering, slices into 4s windows, and runs neural classifier."""
     data = load_audio(file_path)
     total_samples = len(data)
@@ -233,7 +262,7 @@ def classify_audio(file_path: str) -> dict[str, object]:
 
     active_scores: list[float] = []
     silent_windows = 0
-    window_records: list[dict[str, object]] = []
+    window_records: list[WindowRecord] = []
 
     for idx, w in enumerate(windows):
         t_start = round(idx * (hop_len / 16000.0), 2)
@@ -469,6 +498,38 @@ class TactileButton(tk.Frame):
         self.inner.configure(bg=bg)
 
 
+class TelemetryTile(tk.Frame):
+    """Stamped card displaying telemetry metric label, large mono value, and subtitle."""
+
+    def __init__(self, parent: tk.Widget, label: str, value: str, subtext: str):
+        super().__init__(parent, bg=BORDER_SUBTLE)
+        self.inner = tk.Frame(
+            self,
+            bg=BG_SURFACE,
+            highlightthickness=2,
+            highlightbackground=BORDER_SUBTLE,
+            padx=12,
+            pady=10,
+        )
+        self.inner.pack(fill=tk.BOTH, expand=True, padx=(0, 2), pady=(0, 2))
+
+        self.lbl_label = tk.Label(self.inner, text=label, font=FONT_BODY_CAPS, bg=BG_SURFACE, fg=TEXT_MUTED)
+        self.lbl_label.pack(anchor="w")
+
+        self.lbl_value = tk.Label(self.inner, text=value, font=FONT_MONO_LG, bg=BG_SURFACE, fg=COLOR_PRIMARY)
+        self.lbl_value.pack(anchor="w", pady=(2, 2))
+
+        self.lbl_sub = tk.Label(self.inner, text=subtext, font=("Inter", 7), bg=BG_SURFACE, fg=TEXT_MUTED)
+        self.lbl_sub.pack(anchor="w")
+
+    def update_value(self, value: str, fg: str | None = None, subtext: str | None = None) -> None:
+        self.lbl_value.configure(text=value)
+        if fg is not None:
+            self.lbl_value.configure(fg=fg)
+        if subtext is not None:
+            self.lbl_sub.configure(text=subtext)
+
+
 # ==============================================================================
 # Native Desktop Application
 # ==============================================================================
@@ -484,7 +545,7 @@ class CallShieldApp:
         self.current_audio_file: str | None = None
         self.temp_wav_path: str | None = None
         self.is_playing = False
-        self.analysis_result: dict[str, object] | None = None
+        self.analysis_result: ClassificationResult | None = None
 
         # Build UI Layout
         self._setup_scrollable_container()
@@ -960,10 +1021,17 @@ class CallShieldApp:
         grid_frame = tk.Frame(card, bg=BG_CARD)
         grid_frame.pack(fill=tk.X, pady=(0, 18))
 
-        self.tile_score = self._create_telemetry_tile(grid_frame, "ACOUSTIC SCORE", "+0.00", "Classifier Margin")
-        self.tile_min = self._create_telemetry_tile(grid_frame, "LOWEST WINDOW", "+0.00", "Peak Suspect Score")
-        self.tile_flagged = self._create_telemetry_tile(grid_frame, "THREAT WINDOWS", "0 / 0", "Flagged Speech Wins")
-        self.tile_conf = self._create_telemetry_tile(grid_frame, "CONFIDENCE", "-- %", "Ensemble Margin")
+        self.tile_score = TelemetryTile(grid_frame, "ACOUSTIC SCORE", "+0.00", "Classifier Margin")
+        self.tile_score.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4)
+
+        self.tile_min = TelemetryTile(grid_frame, "LOWEST WINDOW", "+0.00", "Peak Suspect Score")
+        self.tile_min.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4)
+
+        self.tile_flagged = TelemetryTile(grid_frame, "THREAT WINDOWS", "0 / 0", "Flagged Speech Wins")
+        self.tile_flagged.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4)
+
+        self.tile_conf = TelemetryTile(grid_frame, "CONFIDENCE", "-- %", "Ensemble Margin")
+        self.tile_conf.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4)
 
         # ----------------------------------------------------------------------
         # Window-by-Window Threat Progression Track (Interactive Canvas)
@@ -1076,30 +1144,6 @@ class CallShieldApp:
         self.tree.pack(side=tk.LEFT, fill=tk.X, expand=True)
         tree_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
-    def _create_telemetry_tile(self, parent: tk.Widget, label: str, value: str, subtext: str) -> dict[str, tk.Widget]:
-        tile_outer = tk.Frame(parent, bg=BORDER_SUBTLE)
-        tile_outer.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4)
-
-        tile_inner = tk.Frame(
-            tile_outer,
-            bg=BG_SURFACE,
-            highlightthickness=2,
-            highlightbackground=BORDER_SUBTLE,
-            padx=12,
-            pady=10,
-        )
-        tile_inner.pack(fill=tk.BOTH, expand=True, padx=(0, 2), pady=(0, 2))
-
-        lbl_t_label = tk.Label(tile_inner, text=label, font=FONT_BODY_CAPS, bg=BG_SURFACE, fg=TEXT_MUTED)
-        lbl_t_label.pack(anchor="w")
-
-        lbl_t_value = tk.Label(tile_inner, text=value, font=FONT_MONO_LG, bg=BG_SURFACE, fg=COLOR_PRIMARY)
-        lbl_t_value.pack(anchor="w", pady=(2, 2))
-
-        lbl_t_sub = tk.Label(tile_inner, text=subtext, font=("Inter", 7), bg=BG_SURFACE, fg=TEXT_MUTED)
-        lbl_t_sub.pack(anchor="w")
-
-        return {"outer": tile_outer, "inner": tile_inner, "label": lbl_t_label, "value": lbl_t_value, "sub": lbl_t_sub}
 
     def _toggle_table(self):
         if self.table_visible:
@@ -1170,7 +1214,7 @@ class CallShieldApp:
         except Exception as e:
             messagebox.showerror("Analysis Error", f"Failed to analyze audio file:\n{e}")
 
-    def _render_results(self, filename: str, res: dict[str, object]):
+    def _render_results(self, filename: str, res: ClassificationResult):
         duration = res["duration"]
         win_count = res["window_count"]
         active_wins = res["active_windows"]
@@ -1203,8 +1247,8 @@ class CallShieldApp:
             self.lbl_level_chip.configure(text="SILENCE", fg=TEXT_MUTED)
             self.level_chip_inner.configure(bg=BG_SURFACE_INSET, highlightbackground=BORDER_SUBTLE)
             self.level_chip_outer.configure(bg=BORDER_SUBTLE)
-            self.tile_score["value"].configure(text="0.00", fg=TEXT_MUTED)
-            self.tile_min["value"].configure(text="0.00", fg=TEXT_MUTED)
+            self.tile_score.update_value("0.00", fg=TEXT_MUTED)
+            self.tile_min.update_value("0.00", fg=TEXT_MUTED)
         elif is_clone:
             self._update_verdict_style(
                 badge_text="AI CLONE DETECTED",
@@ -1219,8 +1263,8 @@ class CallShieldApp:
             self.lbl_level_chip.configure(text="ALERT", fg=COLOR_ALERT)
             self.level_chip_inner.configure(bg=COLOR_ALERT_BG, highlightbackground=COLOR_ALERT)
             self.level_chip_outer.configure(bg=COLOR_ALERT)
-            self.tile_score["value"].configure(text=f"{mean_score:+.2f}", fg=COLOR_ALERT)
-            self.tile_min["value"].configure(text=f"{min_score:+.2f}", fg=COLOR_ALERT)
+            self.tile_score.update_value(f"{mean_score:+.2f}", fg=COLOR_ALERT)
+            self.tile_min.update_value(f"{min_score:+.2f}", fg=COLOR_ALERT)
         else:
             self._update_verdict_style(
                 badge_text="AUTHENTIC",
@@ -1235,22 +1279,19 @@ class CallShieldApp:
             self.lbl_level_chip.configure(text="AUTHENTIC", fg=COLOR_PRIMARY)
             self.level_chip_inner.configure(bg=COLOR_OK_BG, highlightbackground=COLOR_PRIMARY)
             self.level_chip_outer.configure(bg=COLOR_PRIMARY)
-            self.tile_score["value"].configure(text=f"{mean_score:+.2f}", fg=COLOR_PRIMARY)
-            self.tile_min["value"].configure(text=f"{min_score:+.2f}", fg=COLOR_PRIMARY)
+            self.tile_score.update_value(f"{mean_score:+.2f}", fg=COLOR_PRIMARY)
+            self.tile_min.update_value(f"{min_score:+.2f}", fg=COLOR_PRIMARY)
 
         # Update Telemetry Grid
         flagged_count = int(round((flag_ratio / 100.0) * active_wins))
-        self.tile_flagged["value"].configure(text=f"{flagged_count} / {active_wins}")
-        self.tile_flagged["sub"].configure(text=f"{flag_ratio:.0f}% Suspect Ratio")
-
-        self.tile_conf["value"].configure(text=f"{conf}%")
-        self.tile_conf["sub"].configure(text=f"Operating Threshold: {THRESHOLD:.3f}")
+        self.tile_flagged.update_value(f"{flagged_count} / {active_wins}", subtext=f"{flag_ratio:.0f}% Suspect Ratio")
+        self.tile_conf.update_value(f"{conf}%", subtext=f"Operating Threshold: {THRESHOLD:.3f}")
 
         # Draw Window Progression Track
-        self._draw_progression_track(res.get("window_records", []))
+        self._draw_progression_track(res["window_records"])
 
         # Populate Diagnostics Table
-        self._populate_diagnostics_table(res.get("window_records", []))
+        self._populate_diagnostics_table(res["window_records"])
 
     def _update_verdict_style(
         self,
@@ -1274,7 +1315,7 @@ class CallShieldApp:
         self.lbl_verdict_title.configure(text=title, bg=banner_bg, fg=border_color)
         self.lbl_verdict_desc.configure(text=desc, bg=banner_bg)
 
-    def _draw_progression_track(self, records: list[dict[str, object]]):
+    def _draw_progression_track(self, records: list[WindowRecord]):
         cv = self.canvas_track
         cv.delete("all")
 
@@ -1297,8 +1338,8 @@ class CallShieldApp:
             x0 = pad_x + i * (bar_w + gap)
             x1 = x0 + bar_w
 
-            is_silent = rec.get("is_silent", False)
-            status = rec.get("status", "OK")
+            is_silent = bool(rec.get("is_silent", False))
+            status = str(rec.get("status", "OK"))
             score = float(rec.get("score", 0.0))
 
             if is_silent:
@@ -1321,7 +1362,7 @@ class CallShieldApp:
             cv.create_rectangle(x0, y0, x1, y1, fill=color, outline=BORDER_INK, width=1)
 
             # Draw time label below bar
-            t_label = f"{rec.get('time_start', i):.0f}s"
+            t_label = f"{rec.get('time_start', float(i)):.0f}s"
             if n <= 24 or (i % 2 == 0):
                 cv.create_text((x0 + x1) // 2, h_canvas - 10, text=t_label, font=FONT_MONO_SM, fill=TEXT_MUTED)
 
@@ -1330,15 +1371,15 @@ class CallShieldApp:
                 score_str = f"{score:+.1f}"
                 cv.create_text((x0 + x1) // 2, y0 - 7, text=score_str, font=("Consolas", 7, "bold"), fill=TEXT_PRIMARY)
 
-    def _populate_diagnostics_table(self, records: list[dict[str, object]]):
+    def _populate_diagnostics_table(self, records: list[WindowRecord]):
         for item in self.tree.get_children():
             self.tree.delete(item)
 
         for rec in records:
-            time_range = rec.get("time_range", "--")
-            status = rec.get("status", "OK")
-            score = rec.get("score", 0.0)
-            is_silent = rec.get("is_silent", False)
+            time_range = str(rec.get("time_range", "--"))
+            status = str(rec.get("status", "OK"))
+            score = float(rec.get("score", 0.0))
+            is_silent = bool(rec.get("is_silent", False))
 
             if is_silent:
                 threat_label = "SILENT"
@@ -1390,15 +1431,16 @@ class CallShieldApp:
                 else:
                     play_path = str(p)
 
-            winsound.PlaySound(play_path, winsound.SND_ASYNC | winsound.SND_FILENAME)
-            self.is_playing = True
-            self.btn_play.set_text("🔊 Playing...")
-            self.btn_play.set_bg(COLOR_ALERT)
+            if winsound is not None:
+                winsound.PlaySound(play_path, winsound.SND_ASYNC | winsound.SND_FILENAME)
+                self.is_playing = True
+                self.btn_play.set_text("🔊 Playing...")
+                self.btn_play.set_bg(COLOR_ALERT)
         except Exception as e:
             messagebox.showwarning("Audio Error", f"Unable to play audio recording:\n{e}")
 
     def _stop_audio_playback(self):
-        if HAS_WINSOUND and self.is_playing:
+        if winsound is not None and self.is_playing:
             winsound.PlaySound(None, winsound.SND_PURGE)
             self.is_playing = False
             self.btn_play.set_text("▶ Play Audio")
