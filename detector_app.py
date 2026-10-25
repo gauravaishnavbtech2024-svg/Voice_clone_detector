@@ -188,8 +188,19 @@ def load_audio(file_path: str) -> np.ndarray:
             raise ValueError(f"Could not decode audio file: {e_mf}") from e_ar
 
 
+def is_window_silent(w: np.ndarray, threshold_dbfs: float = -42.0) -> bool:
+    """Returns True if window RMS is below threshold_dbfs or peak is near zero."""
+    mean_sq = float(np.mean(w**2))
+    if mean_sq <= 1e-12:
+        return True
+    rms = math.sqrt(mean_sq)
+    dbfs = 20.0 * math.log10(max(1e-9, rms))
+    peak = float(np.max(np.abs(w)))
+    return bool(dbfs < threshold_dbfs or peak < 0.012)
+
+
 def classify_audio(file_path: str) -> dict[str, object]:
-    """Reads audio file, slices into 4s windows, and runs model."""
+    """Reads audio file, applies VAD silence filtering, slices into 4s windows, and runs model."""
     data = load_audio(file_path)
     total_samples = len(data)
     win_len = 64000  # 4 seconds at 16 kHz
@@ -207,32 +218,93 @@ def classify_audio(file_path: str) -> dict[str, object]:
         if not windows:
             windows = [data[:win_len]]
 
-    scores = []
+    active_scores: list[float] = []
+    silent_windows = 0
+
     for w in windows:
-        # RMS normalize to -26 dBFS
-        rms = float(np.sqrt(np.mean(w**2)))
+        # Check if window is silence/room background noise before normalization
+        if is_window_silent(w, threshold_dbfs=-42.0):
+            silent_windows += 1
+            continue
+
+        # Remove DC bias to prevent 0 Hz log-mel artifact
+        w_clean = w - float(np.mean(w))
+
+        # RMS normalize active speech to -26 dBFS
+        rms = float(np.sqrt(np.mean(w_clean**2)))
         target_rms = float(10.0 ** (-26.0 / 20.0))
         if rms > 1e-9:
-            w_norm = (w * (target_rms / rms)).astype(np.float32)
+            w_norm = (w_clean * (target_rms / rms)).astype(np.float32)
         else:
-            w_norm = w.astype(np.float32)
+            w_norm = w_clean.astype(np.float32)
 
         tensor = torch.from_numpy(w_norm).unsqueeze(0).to(DEVICE)
         with torch.inference_mode():
             logit = model(tensor).item()
-        scores.append(logit - THRESHOLD)
+        active_scores.append(logit - THRESHOLD)
 
-    mean_score = float(np.mean(scores))
-    min_score = float(np.min(scores))
-    is_clone = bool(mean_score < 0.0 or min_score < -2.0)
+    # Handle pure silence / background ambient recordings
+    if not active_scores:
+        return {
+            "status": "SILENCE",
+            "duration": round(total_samples / 16000.0, 2),
+            "mean_score": 0.0,
+            "min_score": 0.0,
+            "max_score": 0.0,
+            "is_clone": False,
+            "window_count": len(windows),
+            "active_windows": 0,
+            "silent_windows": silent_windows,
+            "flagged_ratio": 0.0,
+            "confidence": 0,
+            "details": "No audible speech detected. The audio contains only background silence or quiet ambient noise.",
+        }
+
+    mean_score = float(np.mean(active_scores))
+    median_score = float(np.median(active_scores))
+    min_score = float(np.min(active_scores))
+    max_score = float(np.max(active_scores))
+    flagged_count = sum(1 for s in active_scores if s < 0.0)
+    flag_ratio = flagged_count / len(active_scores)
+
+    # Robust decision rule:
+    # 1. AI clones show persistent synthetic acoustic artifacts (at least 40% of speech windows flagged)
+    #    with a low overall mean score (< +0.5).
+    # 2. Or overwhelming negative evidence across all speech windows (mean_score < -1.0).
+    # Genuine speech with a brief breath or click does not trigger false alarm.
+    if (flag_ratio >= 0.40 and mean_score < 0.5) or mean_score < -1.0:
+        is_clone = True
+        status = "CLONE"
+        conf = min(99, int(55 + min(44, abs(mean_score) * 4 + flag_ratio * 35)))
+        details = (
+            f"Synthetic voice clone patterns detected in {flagged_count}/{len(active_scores)} "
+            f"({flag_ratio*100:.0f}%) of active speech windows."
+        )
+    else:
+        is_clone = False
+        status = "GENUINE"
+        conf = min(99, int(55 + min(44, max(0.0, mean_score) * 4 + (1.0 - flag_ratio) * 35)))
+        details = (
+            f"Natural human speech dynamics verified across {len(active_scores) - flagged_count}/"
+            f"{len(active_scores)} ({(1.0 - flag_ratio)*100:.0f}%) of speech windows."
+        )
 
     return {
+        "status": status,
         "duration": round(total_samples / 16000.0, 2),
         "mean_score": round(mean_score, 2),
+        "median_score": round(median_score, 2),
         "min_score": round(min_score, 2),
+        "max_score": round(max_score, 2),
         "is_clone": is_clone,
-        "window_count": len(scores),
+        "window_count": len(windows),
+        "active_windows": len(active_scores),
+        "silent_windows": silent_windows,
+        "flagged_ratio": round(flag_ratio * 100, 1),
+        "confidence": conf,
+        "details": details,
     }
+
 
 
 # Desktop GUI
@@ -344,22 +416,28 @@ class DetectorApp:
         try:
             res = classify_audio(str(p))
 
-            if res["is_clone"]:
+            if res["status"] == "SILENCE":
+                self.lbl_verdict.config(text="⏸️ NO AUDIBLE SPEECH", fg="#777777")
+                self.lbl_details.config(text=res["details"])
+                self.lbl_scores.config(
+                    text=f"Duration: {res['duration']}s  |  All {res['silent_windows']} windows silent"
+                )
+            elif res["is_clone"]:
                 self.lbl_verdict.config(text="🚨 AI VOICE CLONE DETECTED", fg="#cc0000")
-                self.lbl_details.config(
-                    text="Synthetic voice clone patterns detected. This voice matches AI-generated speech."
+                self.lbl_details.config(text=f"{res['details']}\nConfidence: {res['confidence']}%")
+                sign = "+" if res["mean_score"] > 0 else ""
+                min_sign = "+" if res["min_score"] > 0 else ""
+                self.lbl_scores.config(
+                    text=f"Mean: {sign}{res['mean_score']:.2f}  |  Lowest: {min_sign}{res['min_score']:.2f}  |  Speech: {res['active_windows']}/{res['window_count']} wins"
                 )
             else:
                 self.lbl_verdict.config(text="🟢 AUTHENTIC NATURAL VOICE", fg="#008800")
-                self.lbl_details.config(
-                    text="Natural human speech dynamics verified. No clone anomalies found."
+                self.lbl_details.config(text=f"{res['details']}\nConfidence: {res['confidence']}%")
+                sign = "+" if res["mean_score"] > 0 else ""
+                min_sign = "+" if res["min_score"] > 0 else ""
+                self.lbl_scores.config(
+                    text=f"Mean: {sign}{res['mean_score']:.2f}  |  Lowest: {min_sign}{res['min_score']:.2f}  |  Speech: {res['active_windows']}/{res['window_count']} wins"
                 )
-
-            sign = "+" if res["mean_score"] > 0 else ""
-            min_sign = "+" if res["min_score"] > 0 else ""
-            self.lbl_scores.config(
-                text=f"Mean Score: {sign}{res['mean_score']:.2f}  |  Lowest: {min_sign}{res['min_score']:.2f}  |  Duration: {res['duration']}s"
-            )
 
         except Exception as e:
             messagebox.showerror("Analysis Error", f"Failed to analyze audio: {e}")
@@ -371,13 +449,19 @@ if __name__ == "__main__":
         fpath = sys.argv[1]
         print(f"[*] Analyzing {fpath}...")
         res = classify_audio(fpath)
-        verdict = "AI CLONE DETECTED" if res["is_clone"] else "AUTHENTIC HUMAN VOICE"
-        print(f"Verdict:    {verdict}")
+        if res["status"] == "SILENCE":
+            print("Verdict:    NO AUDIBLE SPEECH (SILENCE / AMBIENT NOISE)")
+        elif res["is_clone"]:
+            print(f"Verdict:    AI CLONE DETECTED (Confidence: {res['confidence']}%)")
+        else:
+            print(f"Verdict:    AUTHENTIC NATURAL VOICE (Confidence: {res['confidence']}%)")
         print(f"Mean Score: {res['mean_score']:+.2f}")
         print(f"Lowest:     {res['min_score']:+.2f}")
-        print(f"Duration:   {res['duration']}s ({res['window_count']} windows)")
+        print(f"Duration:   {res['duration']}s ({res['active_windows']} active speech, {res['silent_windows']} silent)")
+        print(f"Details:    {res['details']}")
     else:
         # Native Desktop GUI Mode
         root = tk.Tk()
         app = DetectorApp(root)
         root.mainloop()
+

@@ -18,7 +18,14 @@ class AlertDecider:
       - NaN scores: treated as 'no information', ignored in history
     """
 
-    def __init__(self, thr: float = 0.0, k: int = 4, n: int = 6) -> None:
+    def __init__(
+        self,
+        thr: float = 0.0,
+        k: int = 4,
+        n: int = 6,
+        auto_recover: bool = False,
+        recovery_consecutive_ok: int = 6,
+    ) -> None:
         if k <= 0:
             raise ValueError(f"k must be positive, got {k}")
         if n < k:
@@ -27,6 +34,9 @@ class AlertDecider:
         self.thr = float(thr)
         self.k = int(k)
         self.n = int(n)
+        self.auto_recover = bool(auto_recover)
+        self.recovery_consecutive_ok = int(recovery_consecutive_ok)
+        self.consecutive_genuine: int = 0
         self.history: deque[bool] = deque(maxlen=n)
         self.latched: bool = False
 
@@ -46,6 +56,15 @@ class AlertDecider:
         is_suspicious = bool(score < self.thr)
         self.history.append(is_suspicious)
 
+        if not is_suspicious:
+            self.consecutive_genuine += 1
+        else:
+            self.consecutive_genuine = 0
+
+        # Auto-recovery if enabled and sufficient consecutive genuine scores observed
+        if self.auto_recover and self.latched and self.consecutive_genuine >= self.recovery_consecutive_ok:
+            self.latched = False
+
         current_flagged = self.flagged
         if current_flagged >= self.k:
             self.latched = True
@@ -63,3 +82,4 @@ class AlertDecider:
         """Resets the history queue and clears the alert latch."""
         self.history.clear()
         self.latched = False
+        self.consecutive_genuine = 0

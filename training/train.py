@@ -48,6 +48,7 @@ def compute_eer(scores: np.ndarray, labels: np.ndarray) -> tuple[float, float]:
 
     best_eer = 1.0
     best_thr = 0.0
+    min_diff = float("inf")
 
     for thr in thresholds:
         # False Alarm (Spoof scored as Genuine: score >= thr)
@@ -56,9 +57,9 @@ def compute_eer(scores: np.ndarray, labels: np.ndarray) -> tuple[float, float]:
         frr = np.mean(genuine_scores < thr)
 
         diff = abs(far - frr)
-        eer_approx = (far + frr) / 2.0
-        if diff < 0.01 or eer_approx < best_eer:
-            best_eer = eer_approx
+        if diff < min_diff:
+            min_diff = diff
+            best_eer = (far + frr) / 2.0
             best_thr = float(thr)
 
     return float(best_eer), float(best_thr)
@@ -126,8 +127,13 @@ def evaluate(
         waveforms = waveforms.to(device, non_blocking=True)
         labels_dev = labels.to(device, non_blocking=True)
 
-        logits = model(waveforms)
-        loss = criterion(logits, labels_dev)
+        if device.type == "cuda":
+            with torch.amp.autocast("cuda"):
+                logits = model(waveforms)
+                loss = criterion(logits, labels_dev)
+        else:
+            logits = model(waveforms)
+            loss = criterion(logits, labels_dev)
         total_loss += loss.item()
 
         all_scores.extend(logits.detach().cpu().numpy().tolist())
@@ -308,12 +314,10 @@ def main() -> None:
             f"Dev EER: {dev_eer:.2f}% (Thr: {dev_thr:.3f}) | Time: {epoch_duration:.1f}s"
         )
 
-        # Save checkpoint if improved
-        if dev_loss < best_dev_loss or dev_eer < best_eer:
-            if dev_loss < best_dev_loss:
-                best_dev_loss = dev_loss
-            if dev_eer < best_eer:
-                best_eer = dev_eer
+        # Save checkpoint if dev EER improved (EER is the definitive anti-spoofing metric)
+        if dev_eer < best_eer:
+            best_eer = dev_eer
+            best_dev_loss = dev_loss
 
             checkpoint = {
                 "epoch": epoch,
@@ -324,7 +328,7 @@ def main() -> None:
                 "threshold": dev_thr,
             }
             torch.save(checkpoint, best_model_path)
-            print(f"[*] Saved new best checkpoint to {best_model_path}")
+            print(f"[*] Saved new best checkpoint to {best_model_path} (Dev EER: {dev_eer:.2f}%)")
 
     total_time = time.time() - start_total
     print(
